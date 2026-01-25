@@ -177,14 +177,18 @@ impl HartreeFock {
 
     /// Builds two-electron part of Fock matrix (simplified)
     fn build_g_matrix(&self, density: &Matrix) -> Matrix {
+        // Approximate two-electron repulsion scale factor
+        const APPROX_ERI_SCALE: f64 = 0.1;
+        
         let n = self.basis.size();
         let mut g = Matrix::zeros((n, n));
 
         // Simplified two-electron contribution
-        // In practice, would use electron repulsion integrals
+        // NOTE: This is a crude approximation for educational purposes
+        // Real implementation would use proper electron repulsion integrals (ERIs)
         for i in 0..n {
             for j in 0..n {
-                g[[i, j]] = density[[i, j]] * 0.1; // Simplified
+                g[[i, j]] = density[[i, j]] * APPROX_ERI_SCALE;
             }
         }
 
@@ -194,9 +198,11 @@ impl HartreeFock {
     /// Solves Fock equation: FC = SCE
     ///
     /// Uses canonical orthogonalization
+    /// 
+    /// NOTE: This simplified implementation assumes S ≈ I (near-orthogonal basis).
+    /// For accurate results with non-orthogonal basis sets, should use S^{-1/2}
+    /// transformation (Löwdin orthogonalization) before diagonalization.
     fn solve_fock(&self, fock: &Matrix) -> Result<(Matrix, Vector), String> {
-        // For simplicity, assume S ≈ I and solve as standard eigenvalue problem
-        // In practice, would use S^{-1/2} transformation
         let (energies, c) = eig(fock)?;
 
         // Sort by energy

@@ -84,7 +84,9 @@ impl BasisSet {
             }
             6..=10 => {
                 // C-Ne: 1s, 2s, 2px, 2py, 2pz orbitals (5 basis functions)
-                // For simplicity, using approximate parameters
+                // NOTE: Simplified implementation - p orbitals use same angular=[0,0,0]
+                // In a complete implementation, these would have angular=[1,0,0], [0,1,0], [0,0,1]
+                // and require proper p-type integral evaluation
                 vec![
                     // 1s orbital (core)
                     BasisFunction::new(
@@ -245,11 +247,15 @@ impl BasisSet {
 
     /// Computes two-electron repulsion integrals (very simplified)
     pub fn two_electron_integrals(&self) -> Vec<f64> {
+        // Approximate ERI scale factor
+        const APPROX_ERI_VALUE: f64 = 0.1;
+        
         let n = self.size();
         let size = n * n * n * n;
         
         // Simplified - just use approximate values
-        vec![0.1; size]
+        // NOTE: Real implementation would compute (ij|kl) integrals properly
+        vec![APPROX_ERI_VALUE; size]
     }
 }
 
