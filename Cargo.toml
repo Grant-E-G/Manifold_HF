@@ -1,0 +1,17 @@
+[package]
+name = "manifold_hf"
+version = "0.1.0"
+edition = "2021"
+authors = ["Grant-E-G"]
+description = "Manifold optimization for Hartree-Fock quantum chemistry calculations"
+license = "MIT"
+
+[dependencies]
+ndarray = "0.15"
+
+[dev-dependencies]
+approx = "0.5"
+
+[[example]]
+name = "simple_h2"
+path = "examples/simple_h2.rs"
