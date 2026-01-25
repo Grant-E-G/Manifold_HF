@@ -3,6 +3,7 @@
 //! This module implements the Hartree-Fock method in a functional style,
 //! with integration for manifold optimization.
 
+use ndarray::s;
 use crate::linalg::{Matrix, Vector, matmul, transpose, eig, trace, identity, frobenius_norm};
 use crate::molecule::Molecule;
 use crate::basis::BasisSet;
@@ -240,9 +241,6 @@ pub struct SCFResult {
     /// Whether SCF converged
     pub converged: bool,
 }
-
-// Need to import this for slicing
-use ndarray::s;
 
 #[cfg(test)]
 mod tests {

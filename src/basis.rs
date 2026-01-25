@@ -82,9 +82,52 @@ impl BasisSet {
                     ],
                 )]
             }
-            2..=10 => {
-                // He-Ne: 1s and 2s orbitals (simplified)
-                // For simplicity, we just use two s-orbitals
+            6..=10 => {
+                // C-Ne: 1s, 2s, 2px, 2py, 2pz orbitals (5 basis functions)
+                // For simplicity, using approximate parameters
+                vec![
+                    // 1s orbital (core)
+                    BasisFunction::new(
+                        position,
+                        vec![
+                            GaussianPrimitive::new(10.0, 0.4),
+                            GaussianPrimitive::new(2.0, 0.6),
+                        ],
+                    ),
+                    // 2s orbital (valence)
+                    BasisFunction::new(
+                        position,
+                        vec![
+                            GaussianPrimitive::new(1.5, 0.5),
+                            GaussianPrimitive::new(0.4, 0.5),
+                        ],
+                    ),
+                    // 2p orbitals (3 functions for x, y, z)
+                    BasisFunction::new(
+                        position,
+                        vec![
+                            GaussianPrimitive::new(1.0, 0.5),
+                            GaussianPrimitive::new(0.3, 0.5),
+                        ],
+                    ),
+                    BasisFunction::new(
+                        position,
+                        vec![
+                            GaussianPrimitive::new(1.0, 0.5),
+                            GaussianPrimitive::new(0.3, 0.5),
+                        ],
+                    ),
+                    BasisFunction::new(
+                        position,
+                        vec![
+                            GaussianPrimitive::new(1.0, 0.5),
+                            GaussianPrimitive::new(0.3, 0.5),
+                        ],
+                    ),
+                ]
+            }
+            2..=5 => {
+                // He-B: 1s and 2s orbitals (simplified)
                 vec![
                     BasisFunction::new(
                         position,

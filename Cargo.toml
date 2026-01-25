@@ -15,3 +15,7 @@ approx = "0.5"
 [[example]]
 name = "simple_h2"
 path = "examples/simple_h2.rs"
+
+[[example]]
+name = "compare_molecules"
+path = "examples/compare_molecules.rs"

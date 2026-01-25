@@ -12,8 +12,8 @@ This library implements the Hartree-Fock (HF) method for quantum chemistry calcu
 - **Functional Programming Style**: Immutable data structures, pure functions, and functional composition throughout
 - **Manifold Optimization**: Direct optimization on the Stiefel manifold for molecular orbitals
 - **Self-Consistent Field (SCF)**: Traditional Roothaan-Hall SCF algorithm
-- **Minimal Basis Sets**: STO-3G style Gaussian basis functions
-- **Example Molecules**: Pre-configured H₂ and H₂O molecules
+- **Minimal Basis Sets**: STO-3G style Gaussian basis functions with support for s and p orbitals
+- **Example Molecules**: Pre-configured H₂, H₂O, and D₂O (heavy water) molecules
 
 ## Quick Start
 
@@ -23,11 +23,14 @@ This library implements the Hartree-Fock (HF) method for quantum chemistry calcu
 # Build the project
 cargo build --release
 
-# Run the main binary (demonstrates both SCF methods)
+# Run the main binary (demonstrates H2, H2O, and D2O calculations)
 cargo run --release
 
 # Run the H2 example
 cargo run --release --example simple_h2
+
+# Run the molecular comparison example
+cargo run --release --example compare_molecules
 
 # Run tests
 cargo test
@@ -61,6 +64,13 @@ fn main() {
     // Run manifold-optimized SCF
     let result = hf.run_scf_manifold(100, 1e-6).unwrap();
     println!("Energy (Manifold): {:.10} Hartree", result.energy);
+    
+    // Compare water and heavy water
+    let h2o = Molecule::h2o();
+    let d2o = Molecule::d2o();
+    
+    println!("H2O and D2O have identical electronic structures");
+    println!("(deuterium has same atomic number as hydrogen)");
 }
 ```
 

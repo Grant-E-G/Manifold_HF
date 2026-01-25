@@ -110,6 +110,22 @@ impl Molecule {
             1,
         )
     }
+
+    /// Creates a heavy water molecule (D2O)
+    /// Note: Deuterium has the same atomic number as hydrogen (1),
+    /// so electronically it's identical to H2O in the Born-Oppenheimer approximation
+    pub fn d2o() -> Self {
+        // Same geometry as H2O (deuterium has same atomic number as hydrogen)
+        Self::new(
+            vec![
+                Atom::new(8, [0.0, 0.0, 0.0]),           // O
+                Atom::new(1, [0.0, 1.43, 1.11]),         // D (atomic number 1)
+                Atom::new(1, [0.0, -1.43, 1.11]),        // D (atomic number 1)
+            ],
+            0,
+            1,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -137,5 +153,13 @@ mod tests {
         let h2o = Molecule::h2o();
         assert_eq!(h2o.num_electrons(), 10);
         assert_eq!(h2o.num_occupied(), 5);
+    }
+
+    #[test]
+    fn test_d2o_electrons() {
+        let d2o = Molecule::d2o();
+        // D2O has same electronic structure as H2O
+        assert_eq!(d2o.num_electrons(), 10);
+        assert_eq!(d2o.num_occupied(), 5);
     }
 }
