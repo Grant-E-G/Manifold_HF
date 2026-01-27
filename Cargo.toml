@@ -19,3 +19,7 @@ path = "examples/simple_h2.rs"
 [[example]]
 name = "compare_molecules"
 path = "examples/compare_molecules.rs"
+
+[[example]]
+name = "render_molecule"
+path = "examples/render_molecule.rs"
