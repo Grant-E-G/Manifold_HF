@@ -50,7 +50,7 @@ impl Default for DiagramOptions {
             show_atom_labels: true,
             bond_scale: 1.25,
             atom_radius_px: 14.0,
-            world_padding_bohr: 0.6,
+            world_padding_bohr: 2.0,
             background: "#ffffff".to_string(),
         }
     }
@@ -63,6 +63,7 @@ pub struct OrbitalSettings {
     pub cutoff_fraction: f64,
     pub alpha: f64,
     pub plane_offset: f64,
+    pub auto_expand_bounds: bool,
 }
 
 impl Default for OrbitalSettings {
@@ -73,6 +74,7 @@ impl Default for OrbitalSettings {
             cutoff_fraction: 0.18,
             alpha: 0.6,
             plane_offset: 0.0,
+            auto_expand_bounds: false,
         }
     }
 }
@@ -145,8 +147,12 @@ fn render_molecule_svg_internal(
     orbital_settings: Option<&OrbitalSettings>,
 ) -> Result<String, String> {
     let projected = project_atoms(molecule, options.projection);
-    let bounds = compute_bounds(&projected, options.world_padding_bohr);
-
+    let mut bounds = compute_bounds(&projected, options.world_padding_bohr);
+    if let (Some((basis, coefficients)), Some(settings)) = (orbital_basis, orbital_settings) {
+        if settings.auto_expand_bounds {
+            bounds = auto_expand_bounds(options.projection, &bounds, basis, coefficients, settings)?;
+        }
+    }
     let transform = compute_transform(&bounds, options);
     let bonds = detect_bonds(molecule, options.bond_scale);
 
@@ -245,6 +251,8 @@ fn render_molecule_svg_internal(
         }
         svg.push_str("</g>");
     }
+
+    svg.push_str(&scale_bar_svg(options, &bounds, &transform));
 
     svg.push_str("</svg>");
 
@@ -414,6 +422,89 @@ fn format_length(length_bohr: f64, unit: LengthUnit) -> String {
     }
 }
 
+fn scale_bar_svg(options: &DiagramOptions, bounds: &Bounds, transform: &Transform) -> String {
+    let width_bohr = (bounds.max_x - bounds.min_x).max(1.0);
+    let width_units = match options.length_unit {
+        LengthUnit::Bohr => width_bohr,
+        LengthUnit::Angstrom => width_bohr * BOHR_TO_ANGSTROM,
+    };
+    let target_units = width_units * 0.25;
+    let nice_units = nice_length(target_units);
+    if !nice_units.is_finite() || nice_units <= 0.0 {
+        return String::new();
+    }
+    let length_bohr = match options.length_unit {
+        LengthUnit::Bohr => nice_units,
+        LengthUnit::Angstrom => nice_units / BOHR_TO_ANGSTROM,
+    };
+    let length_px = transform.length_to_screen(length_bohr);
+    if length_px <= 0.0 {
+        return String::new();
+    }
+
+    let x0 = options.padding_px;
+    let y0 = options.height as f64 - options.padding_px * 0.6;
+    let tick = 6.0;
+    let label = format_length(length_bohr, options.length_unit);
+
+    let mut svg = String::new();
+    svg.push_str("<g stroke='#222222' stroke-width='2'>");
+    svg.push_str(&format!(
+        "<line x1='{:.2}' y1='{:.2}' x2='{:.2}' y2='{:.2}'/>",
+        x0,
+        y0,
+        x0 + length_px,
+        y0
+    ));
+    svg.push_str(&format!(
+        "<line x1='{:.2}' y1='{:.2}' x2='{:.2}' y2='{:.2}'/>",
+        x0,
+        y0 - tick * 0.5,
+        x0,
+        y0 + tick * 0.5
+    ));
+    svg.push_str(&format!(
+        "<line x1='{:.2}' y1='{:.2}' x2='{:.2}' y2='{:.2}'/>",
+        x0 + length_px,
+        y0 - tick * 0.5,
+        x0 + length_px,
+        y0 + tick * 0.5
+    ));
+    svg.push_str("</g>");
+    svg.push_str("<g fill='#222222' font-size='12' font-family='DejaVu Sans, Arial, sans-serif'>");
+    svg.push_str(&format!(
+        "<text x='{:.2}' y='{:.2}' text-anchor='middle'>{}</text>",
+        x0 + length_px * 0.5,
+        y0 + 14.0,
+        label
+    ));
+    svg.push_str("</g>");
+
+    svg
+}
+
+fn nice_length(target: f64) -> f64 {
+    if !target.is_finite() || target <= 0.0 {
+        return 0.0;
+    }
+    let exp = 10_f64.powf(target.log10().floor());
+    let frac = target / exp;
+    let nice_frac = if frac <= 0.2 {
+        0.2
+    } else if frac <= 0.5 {
+        0.5
+    } else if frac <= 1.0 {
+        1.0
+    } else if frac <= 2.0 {
+        2.0
+    } else if frac <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    nice_frac * exp
+}
+
 struct AngleAnnotations {
     paths: String,
     labels: String,
@@ -555,6 +646,59 @@ fn compute_orbital_field(
     coefficients: &Matrix,
     settings: &OrbitalSettings,
 ) -> Result<String, String> {
+    let field = compute_orbital_values(options.projection, bounds, basis, coefficients, settings)?;
+    if field.max_abs == 0.0 {
+        return Ok(String::new());
+    }
+
+    let transform = compute_transform(bounds, options);
+    let cell_w = transform.length_to_screen(field.dx);
+    let cell_h = transform.length_to_screen(field.dy);
+    let cutoff = settings.cutoff_fraction.clamp(0.0, 1.0) * field.max_abs;
+
+    let mut svg = String::new();
+
+    for (idx, value) in field.values.iter().enumerate() {
+        if value.abs() < cutoff {
+            continue;
+        }
+        let i = idx % field.grid;
+        let j = idx / field.grid;
+        let x = bounds.min_x + field.dx * i as f64;
+        let y = bounds.min_y + field.dy * j as f64;
+        let pos = transform.to_screen(Vec2 { x, y });
+        let alpha = (value.abs() / field.max_abs) * settings.alpha;
+        let color = if *value >= 0.0 { "#3b6fb6" } else { "#d1495b" };
+        svg.push_str(&format!(
+            "<rect x='{:.2}' y='{:.2}' width='{:.2}' height='{:.2}' fill='{}' fill-opacity='{:.3}'/>",
+            pos.x - cell_w * 0.5,
+            pos.y - cell_h * 0.5,
+            cell_w,
+            cell_h,
+            color,
+            alpha.min(0.9)
+        ));
+    }
+
+    Ok(svg)
+}
+
+struct OrbitalField {
+    values: Vec<f64>,
+    max_abs: f64,
+    edge_max_abs: f64,
+    grid: usize,
+    dx: f64,
+    dy: f64,
+}
+
+fn compute_orbital_values(
+    projection: ProjectionPlane,
+    bounds: &Bounds,
+    basis: &BasisSet,
+    coefficients: &Matrix,
+    settings: &OrbitalSettings,
+) -> Result<OrbitalField, String> {
     let n_basis = basis.size();
     if settings.orbital_index >= coefficients.ncols() {
         return Err(format!(
@@ -573,12 +717,13 @@ fn compute_orbital_field(
 
     let mut values = Vec::with_capacity(grid * grid);
     let mut max_abs: f64 = 0.0;
+    let mut edge_max_abs: f64 = 0.0;
 
     for j in 0..grid {
         for i in 0..grid {
             let x = bounds.min_x + dx * i as f64;
             let y = bounds.min_y + dy * j as f64;
-            let point = expand_point(options.projection, x, y, settings.plane_offset);
+            let point = expand_point(projection, x, y, settings.plane_offset);
             let mut value = 0.0;
             for k in 0..n_basis {
                 let coeff = coefficients[[k, settings.orbital_index]];
@@ -588,44 +733,66 @@ fn compute_orbital_field(
                 value += coeff * basis.functions[k].evaluate(point);
             }
             max_abs = max_abs.max(value.abs());
+            if i == 0 || j == 0 || i + 1 == grid || j + 1 == grid {
+                edge_max_abs = edge_max_abs.max(value.abs());
+            }
             values.push(value);
         }
     }
 
-    if max_abs == 0.0 {
-        return Ok(String::new());
+    Ok(OrbitalField {
+        values,
+        max_abs,
+        edge_max_abs,
+        grid,
+        dx,
+        dy,
+    })
+}
+
+fn auto_expand_bounds(
+    projection: ProjectionPlane,
+    start: &Bounds,
+    basis: &BasisSet,
+    coefficients: &Matrix,
+    settings: &OrbitalSettings,
+) -> Result<Bounds, String> {
+    let mut bounds = *start;
+    let cutoff_fraction = settings.cutoff_fraction.clamp(0.0, 1.0);
+    if cutoff_fraction <= 0.0 {
+        return Ok(bounds);
     }
 
-    let transform = compute_transform(bounds, options);
-    let cell_w = transform.length_to_screen(dx);
-    let cell_h = transform.length_to_screen(dy);
-    let cutoff = settings.cutoff_fraction.clamp(0.0, 1.0) * max_abs;
-
-    let mut svg = String::new();
-
-    for (idx, value) in values.iter().enumerate() {
-        if value.abs() < cutoff {
-            continue;
+    let max_iters = 6;
+    for _ in 0..max_iters {
+        let field = compute_orbital_values(
+            projection,
+            &bounds,
+            basis,
+            coefficients,
+            settings,
+        )?;
+        if field.max_abs == 0.0 {
+            break;
         }
-        let i = idx % grid;
-        let j = idx / grid;
-        let x = bounds.min_x + dx * i as f64;
-        let y = bounds.min_y + dy * j as f64;
-        let pos = transform.to_screen(Vec2 { x, y });
-        let alpha = (value.abs() / max_abs) * settings.alpha;
-        let color = if *value >= 0.0 { "#3b6fb6" } else { "#d1495b" };
-        svg.push_str(&format!(
-            "<rect x='{:.2}' y='{:.2}' width='{:.2}' height='{:.2}' fill='{}' fill-opacity='{:.3}'/>",
-            pos.x - cell_w * 0.5,
-            pos.y - cell_h * 0.5,
-            cell_w,
-            cell_h,
-            color,
-            alpha.min(0.9)
-        ));
+        let cutoff = cutoff_fraction * field.max_abs;
+        if field.edge_max_abs < cutoff {
+            break;
+        }
+
+        let range_x = (bounds.max_x - bounds.min_x).max(1.0);
+        let range_y = (bounds.max_y - bounds.min_y).max(1.0);
+        let expand_x = range_x * 0.25 + 0.4;
+        let expand_y = range_y * 0.25 + 0.4;
+        bounds = Bounds {
+            min_x: bounds.min_x - expand_x,
+            max_x: bounds.max_x + expand_x,
+            min_y: bounds.min_y - expand_y,
+            max_y: bounds.max_y + expand_y,
+        };
     }
 
-    Ok(svg)
+    Ok(bounds)
 }
 
 fn expand_point(plane: ProjectionPlane, x: f64, y: f64, offset: f64) -> [f64; 3] {

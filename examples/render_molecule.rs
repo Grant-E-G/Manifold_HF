@@ -10,6 +10,7 @@ fn main() {
     let mut molecule_name = "h2o".to_string();
     let mut output = "molecule.svg".to_string();
     let mut orbital_index: Option<usize> = None;
+    let mut auto_expand_bounds = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -28,6 +29,9 @@ fn main() {
                     orbital_index = Some(index);
                     i += 1;
                 }
+            }
+            "--auto-bounds" | "--orbital-auto-bounds" => {
+                auto_expand_bounds = true;
             }
             "--help" | "-h" => {
                 print_usage();
@@ -61,6 +65,7 @@ fn main() {
             .expect("SCF failed while preparing orbital visualization");
         let orbital = OrbitalSettings {
             orbital_index: index,
+            auto_expand_bounds,
             ..Default::default()
         };
         render_molecule_svg_with_orbital(
@@ -81,6 +86,6 @@ fn main() {
 
 fn print_usage() {
     eprintln!(
-        "Usage: cargo run --example render_molecule -- [h2|h2o|d2o] [--out FILE.svg] [--orbital N]"
+        "Usage: cargo run --example render_molecule -- [h2|h2o|d2o] [--out FILE.svg] [--orbital N] [--auto-bounds]"
     );
 }
