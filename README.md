@@ -181,6 +181,12 @@ Currently implements STO-3G style minimal basis sets:
 - Hydrogen: Single 1s orbital (3 Gaussian primitives)
 - Heavy atoms: 1s and 2s orbitals (simplified)
 
+**Basis data source**
+
+STO-3G parameters are sourced from the Basis Set Exchange (BSE). The raw JSON is stored in
+`data/sto-3g.json`, with citations in `data/sto-3g.references.txt` and provenance in
+`data/sto-3g.SOURCE.txt`. The data is imported in code via `src/basis_data.rs`.
+
 ### Integral Evaluation
 
 The current implementation uses simplified integral approximations suitable for small systems and educational purposes. For production calculations, more sophisticated integral evaluation would be needed.

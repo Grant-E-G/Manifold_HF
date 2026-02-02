@@ -35,6 +35,8 @@ pub struct DiagramOptions {
     pub atom_radius_px: f64,
     pub world_padding_bohr: f64,
     pub background: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
 }
 
 impl Default for DiagramOptions {
@@ -52,6 +54,8 @@ impl Default for DiagramOptions {
             atom_radius_px: 14.0,
             world_padding_bohr: 2.0,
             background: "#ffffff".to_string(),
+            title: None,
+            description: None,
         }
     }
 }
@@ -77,6 +81,25 @@ impl Default for OrbitalSettings {
             auto_expand_bounds: false,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+enum OrbitalColorMode {
+    Phase,
+    Solid(String),
+}
+
+#[derive(Debug, Clone)]
+struct OrbitalLayer {
+    settings: OrbitalSettings,
+    color_mode: OrbitalColorMode,
+}
+
+struct OrbitalRenderInfo {
+    svg: String,
+    centroid: Option<Vec2>,
+    legend_color: Option<String>,
+    label: String,
 }
 
 #[derive(Debug, Clone)]
@@ -132,11 +155,44 @@ pub fn render_molecule_svg_with_orbital(
     options: &DiagramOptions,
     orbital: &OrbitalSettings,
 ) -> Result<String, String> {
+    let layer = OrbitalLayer {
+        settings: orbital.clone(),
+        color_mode: OrbitalColorMode::Phase,
+    };
     render_molecule_svg_internal(
         molecule,
         options,
         Some((basis, coefficients)),
-        Some(orbital),
+        Some(vec![layer]),
+    )
+}
+
+pub fn render_molecule_svg_with_orbitals(
+    molecule: &Molecule,
+    basis: &BasisSet,
+    coefficients: &Matrix,
+    options: &DiagramOptions,
+    orbital_indices: &[usize],
+    orbital: &OrbitalSettings,
+) -> Result<String, String> {
+    let palette = default_orbital_palette(orbital_indices.len().max(1));
+    let layers = orbital_indices
+        .iter()
+        .enumerate()
+        .map(|(idx, &orbital_index)| OrbitalLayer {
+            settings: OrbitalSettings {
+                orbital_index,
+                ..orbital.clone()
+            },
+            color_mode: OrbitalColorMode::Solid(palette[idx].clone()),
+        })
+        .collect();
+
+    render_molecule_svg_internal(
+        molecule,
+        options,
+        Some((basis, coefficients)),
+        Some(layers),
     )
 }
 
@@ -144,13 +200,14 @@ fn render_molecule_svg_internal(
     molecule: &Molecule,
     options: &DiagramOptions,
     orbital_basis: Option<(&BasisSet, &Matrix)>,
-    orbital_settings: Option<&OrbitalSettings>,
+    orbital_layers: Option<Vec<OrbitalLayer>>,
 ) -> Result<String, String> {
     let projected = project_atoms(molecule, options.projection);
     let mut bounds = compute_bounds(&projected, options.world_padding_bohr);
-    if let (Some((basis, coefficients)), Some(settings)) = (orbital_basis, orbital_settings) {
-        if settings.auto_expand_bounds {
-            bounds = auto_expand_bounds(options.projection, &bounds, basis, coefficients, settings)?;
+    let layers_ref = orbital_layers.as_deref();
+    if let (Some((basis, coefficients)), Some(layers)) = (orbital_basis, layers_ref) {
+        if layers.iter().any(|layer| layer.settings.auto_expand_bounds) {
+            bounds = auto_expand_bounds_layers(options.projection, &bounds, basis, coefficients, layers)?;
         }
     }
     let transform = compute_transform(&bounds, options);
@@ -169,8 +226,55 @@ fn render_molecule_svg_internal(
         options.background
     ));
 
-    if let (Some((basis, coefficients)), Some(settings)) = (orbital_basis, orbital_settings) {
-        let field = compute_orbital_field(options, &bounds, basis, coefficients, settings)?;
+    if let Some(title) = options.title.as_ref() {
+        svg.push_str(&format!("<title>{}</title>", escape_xml(title)));
+    }
+    if let Some(description) = options.description.as_ref() {
+        svg.push_str(&format!("<desc>{}</desc>", escape_xml(description)));
+    }
+
+    if options.title.is_some() || options.description.is_some() {
+        let x = options.padding_px;
+        let mut y = options.padding_px * 0.6;
+        if let Some(title) = options.title.as_ref() {
+            svg.push_str("<g fill='#111111' font-size='18' font-family='DejaVu Sans, Arial, sans-serif' font-weight='600'>");
+            svg.push_str(&format!(
+                "<text x='{:.2}' y='{:.2}' text-anchor='start' dominant-baseline='hanging'>{}</text>",
+                x,
+                y,
+                escape_xml(title)
+            ));
+            svg.push_str("</g>");
+            y += 20.0;
+        }
+        if let Some(description) = options.description.as_ref() {
+            svg.push_str("<g fill='#333333' font-size='12' font-family='DejaVu Sans, Arial, sans-serif'>");
+            svg.push_str(&format!(
+                "<text x='{:.2}' y='{:.2}' text-anchor='start' dominant-baseline='hanging'>{}</text>",
+                x,
+                y,
+                escape_xml(description)
+            ));
+            svg.push_str("</g>");
+        }
+    }
+
+    let mut orbital_renders: Vec<OrbitalRenderInfo> = Vec::new();
+    if let (Some((basis, coefficients)), Some(layers)) = (orbital_basis, layers_ref) {
+        let mut field = String::new();
+        for layer in layers {
+            let render = render_orbital_layer_svg(
+                options.projection,
+                &bounds,
+                &transform,
+                basis,
+                coefficients,
+                &layer.settings,
+                &layer.color_mode,
+            )?;
+            field.push_str(&render.svg);
+            orbital_renders.push(render);
+        }
         svg.push_str("<g opacity='1'>");
         svg.push_str(&field);
         svg.push_str("</g>");
@@ -250,6 +354,11 @@ fn render_molecule_svg_internal(
             ));
         }
         svg.push_str("</g>");
+    }
+
+    if !orbital_renders.is_empty() {
+        svg.push_str(&render_orbital_centroids(&orbital_renders, &transform));
+        svg.push_str(&render_orbital_legend(options, &orbital_renders));
     }
 
     svg.push_str(&scale_bar_svg(options, &bounds, &transform));
@@ -420,6 +529,169 @@ fn format_length(length_bohr: f64, unit: LengthUnit) -> String {
             format!("{:.2} Angstrom", angstrom)
         }
     }
+}
+
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn default_orbital_palette(count: usize) -> Vec<String> {
+    let n = count.max(1);
+    let mut colors = Vec::with_capacity(n);
+    for i in 0..n {
+        let hue = (i as f64) / (n as f64);
+        let (r, g, b) = hsl_to_rgb(hue, 0.62, 0.45);
+        colors.push(format!("#{:02x}{:02x}{:02x}", r, g, b));
+    }
+    colors
+}
+
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h_prime = (h * 6.0) % 6.0;
+    let x = c * (1.0 - ((h_prime % 2.0) - 1.0).abs());
+
+    let (r1, g1, b1) = if (0.0..1.0).contains(&h_prime) {
+        (c, x, 0.0)
+    } else if (1.0..2.0).contains(&h_prime) {
+        (x, c, 0.0)
+    } else if (2.0..3.0).contains(&h_prime) {
+        (0.0, c, x)
+    } else if (3.0..4.0).contains(&h_prime) {
+        (0.0, x, c)
+    } else if (4.0..5.0).contains(&h_prime) {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+
+    let m = l - c * 0.5;
+    let to_u8 = |v: f64| ((v + m).clamp(0.0, 1.0) * 255.0).round() as u8;
+    (to_u8(r1), to_u8(g1), to_u8(b1))
+}
+
+fn orbital_centroid(field: &OrbitalField, bounds: &Bounds) -> Option<Vec2> {
+    let mut weight_sum = 0.0;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+
+    for (idx, value) in field.values.iter().enumerate() {
+        let weight = value * value;
+        if weight == 0.0 {
+            continue;
+        }
+        let i = idx % field.grid;
+        let j = idx / field.grid;
+        let x = bounds.min_x + field.dx * i as f64;
+        let y = bounds.min_y + field.dy * j as f64;
+        weight_sum += weight;
+        sum_x += x * weight;
+        sum_y += y * weight;
+    }
+
+    if weight_sum <= 0.0 {
+        return None;
+    }
+
+    Some(Vec2 {
+        x: sum_x / weight_sum,
+        y: sum_y / weight_sum,
+    })
+}
+
+fn render_orbital_centroids(infos: &[OrbitalRenderInfo], transform: &Transform) -> String {
+    let mut svg = String::new();
+    svg.push_str("<g stroke-width='2'>");
+    for info in infos {
+        let centroid = match info.centroid {
+            Some(c) => c,
+            None => continue,
+        };
+        let color = info
+            .legend_color
+            .as_deref()
+            .unwrap_or("#111111");
+        let screen = transform.to_screen(centroid);
+        svg.push_str(&format!(
+            "<circle cx='{:.2}' cy='{:.2}' r='4.2' fill='#ffffff' stroke='{}'/>",
+            screen.x, screen.y, color
+        ));
+        svg.push_str(&format!(
+            "<line x1='{:.2}' y1='{:.2}' x2='{:.2}' y2='{:.2}' stroke='{}'/>",
+            screen.x - 6.0,
+            screen.y,
+            screen.x + 6.0,
+            screen.y,
+            color
+        ));
+        svg.push_str(&format!(
+            "<line x1='{:.2}' y1='{:.2}' x2='{:.2}' y2='{:.2}' stroke='{}'/>",
+            screen.x,
+            screen.y - 6.0,
+            screen.x,
+            screen.y + 6.0,
+            color
+        ));
+        svg.push_str(&format!(
+            "<text x='{:.2}' y='{:.2}' fill='{}' font-size='11' font-family='DejaVu Sans, Arial, sans-serif'>{}</text>",
+            screen.x + 8.0,
+            screen.y - 8.0,
+            color,
+            escape_xml(&info.label)
+        ));
+    }
+    svg.push_str("</g>");
+    svg
+}
+
+fn render_orbital_legend(options: &DiagramOptions, infos: &[OrbitalRenderInfo]) -> String {
+    let entries: Vec<&OrbitalRenderInfo> = infos
+        .iter()
+        .filter(|info| info.legend_color.is_some())
+        .collect();
+    if entries.len() < 2 {
+        return String::new();
+    }
+
+    let swatch = 10.0;
+    let line_height = 16.0;
+    let padding = 8.0;
+    let width = 120.0;
+    let height = padding * 2.0 + line_height * entries.len() as f64;
+    let x0 = options.width as f64 - options.padding_px - width;
+    let y0 = options.padding_px * 0.6;
+
+    let mut svg = String::new();
+    svg.push_str("<g>");
+    svg.push_str(&format!(
+        "<rect x='{:.2}' y='{:.2}' width='{:.2}' height='{:.2}' fill='#ffffff' fill-opacity='0.85' stroke='#cccccc'/>",
+        x0, y0, width, height
+    ));
+    for (idx, info) in entries.iter().enumerate() {
+        let color = info.legend_color.as_deref().unwrap_or("#111111");
+        let y = y0 + padding + line_height * idx as f64 + 10.0;
+        svg.push_str(&format!(
+            "<rect x='{:.2}' y='{:.2}' width='{:.2}' height='{:.2}' fill='{}'/>",
+            x0 + padding,
+            y - swatch * 0.75,
+            swatch,
+            swatch,
+            color
+        ));
+        svg.push_str(&format!(
+            "<text x='{:.2}' y='{:.2}' fill='#111111' font-size='12' font-family='DejaVu Sans, Arial, sans-serif'>{}</text>",
+            x0 + padding + swatch + 6.0,
+            y,
+            escape_xml(&info.label)
+        ));
+    }
+    svg.push_str("</g>");
+    svg
 }
 
 fn scale_bar_svg(options: &DiagramOptions, bounds: &Bounds, transform: &Transform) -> String {
@@ -639,50 +911,6 @@ fn cross(a: Vec2, b: Vec2) -> f64 {
     a.x * b.y - a.y * b.x
 }
 
-fn compute_orbital_field(
-    options: &DiagramOptions,
-    bounds: &Bounds,
-    basis: &BasisSet,
-    coefficients: &Matrix,
-    settings: &OrbitalSettings,
-) -> Result<String, String> {
-    let field = compute_orbital_values(options.projection, bounds, basis, coefficients, settings)?;
-    if field.max_abs == 0.0 {
-        return Ok(String::new());
-    }
-
-    let transform = compute_transform(bounds, options);
-    let cell_w = transform.length_to_screen(field.dx);
-    let cell_h = transform.length_to_screen(field.dy);
-    let cutoff = settings.cutoff_fraction.clamp(0.0, 1.0) * field.max_abs;
-
-    let mut svg = String::new();
-
-    for (idx, value) in field.values.iter().enumerate() {
-        if value.abs() < cutoff {
-            continue;
-        }
-        let i = idx % field.grid;
-        let j = idx / field.grid;
-        let x = bounds.min_x + field.dx * i as f64;
-        let y = bounds.min_y + field.dy * j as f64;
-        let pos = transform.to_screen(Vec2 { x, y });
-        let alpha = (value.abs() / field.max_abs) * settings.alpha;
-        let color = if *value >= 0.0 { "#3b6fb6" } else { "#d1495b" };
-        svg.push_str(&format!(
-            "<rect x='{:.2}' y='{:.2}' width='{:.2}' height='{:.2}' fill='{}' fill-opacity='{:.3}'/>",
-            pos.x - cell_w * 0.5,
-            pos.y - cell_h * 0.5,
-            cell_w,
-            cell_h,
-            color,
-            alpha.min(0.9)
-        ));
-    }
-
-    Ok(svg)
-}
-
 struct OrbitalField {
     values: Vec<f64>,
     max_abs: f64,
@@ -750,33 +978,104 @@ fn compute_orbital_values(
     })
 }
 
-fn auto_expand_bounds(
+fn render_orbital_layer_svg(
+    projection: ProjectionPlane,
+    bounds: &Bounds,
+    transform: &Transform,
+    basis: &BasisSet,
+    coefficients: &Matrix,
+    settings: &OrbitalSettings,
+    color_mode: &OrbitalColorMode,
+) -> Result<OrbitalRenderInfo, String> {
+    let field = compute_orbital_values(projection, bounds, basis, coefficients, settings)?;
+    if field.max_abs == 0.0 {
+        return Ok(OrbitalRenderInfo {
+            svg: String::new(),
+            centroid: None,
+            legend_color: None,
+            label: format!("MO {}", settings.orbital_index),
+        });
+    }
+
+    let cell_w = transform.length_to_screen(field.dx);
+    let cell_h = transform.length_to_screen(field.dy);
+    let cutoff = settings.cutoff_fraction.clamp(0.0, 1.0) * field.max_abs;
+
+    let mut svg = String::new();
+
+    for (idx, value) in field.values.iter().enumerate() {
+        if value.abs() < cutoff {
+            continue;
+        }
+        let i = idx % field.grid;
+        let j = idx / field.grid;
+        let x = bounds.min_x + field.dx * i as f64;
+        let y = bounds.min_y + field.dy * j as f64;
+        let pos = transform.to_screen(Vec2 { x, y });
+        let alpha = (value.abs() / field.max_abs) * settings.alpha;
+        let color = match color_mode {
+            OrbitalColorMode::Phase => {
+                if *value >= 0.0 { "#3b6fb6" } else { "#d1495b" }
+            }
+            OrbitalColorMode::Solid(color) => color.as_str(),
+        };
+        svg.push_str(&format!(
+            "<rect x='{:.2}' y='{:.2}' width='{:.2}' height='{:.2}' fill='{}' fill-opacity='{:.3}'/>",
+            pos.x - cell_w * 0.5,
+            pos.y - cell_h * 0.5,
+            cell_w,
+            cell_h,
+            color,
+            alpha.min(0.9)
+        ));
+    }
+
+    let legend_color = match color_mode {
+        OrbitalColorMode::Solid(color) => Some(color.clone()),
+        OrbitalColorMode::Phase => None,
+    };
+
+    Ok(OrbitalRenderInfo {
+        svg,
+        centroid: orbital_centroid(&field, bounds),
+        legend_color,
+        label: format!("MO {}", settings.orbital_index),
+    })
+}
+
+fn auto_expand_bounds_layers(
     projection: ProjectionPlane,
     start: &Bounds,
     basis: &BasisSet,
     coefficients: &Matrix,
-    settings: &OrbitalSettings,
+    layers: &[OrbitalLayer],
 ) -> Result<Bounds, String> {
     let mut bounds = *start;
-    let cutoff_fraction = settings.cutoff_fraction.clamp(0.0, 1.0);
-    if cutoff_fraction <= 0.0 {
-        return Ok(bounds);
-    }
-
     let max_iters = 6;
     for _ in 0..max_iters {
-        let field = compute_orbital_values(
-            projection,
-            &bounds,
-            basis,
-            coefficients,
-            settings,
-        )?;
-        if field.max_abs == 0.0 {
-            break;
+        let mut needs_expand = false;
+        for layer in layers {
+            let cutoff_fraction = layer.settings.cutoff_fraction.clamp(0.0, 1.0);
+            if cutoff_fraction <= 0.0 {
+                continue;
+            }
+            let field = compute_orbital_values(
+                projection,
+                &bounds,
+                basis,
+                coefficients,
+                &layer.settings,
+            )?;
+            if field.max_abs == 0.0 {
+                continue;
+            }
+            let cutoff = cutoff_fraction * field.max_abs;
+            if field.edge_max_abs >= cutoff {
+                needs_expand = true;
+                break;
+            }
         }
-        let cutoff = cutoff_fraction * field.max_abs;
-        if field.edge_max_abs < cutoff {
+        if !needs_expand {
             break;
         }
 

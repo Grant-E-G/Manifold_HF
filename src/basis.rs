@@ -27,8 +27,6 @@ pub struct BasisFunction {
     pub center: [f64; 3],
     /// Primitive Gaussians
     pub primitives: Vec<GaussianPrimitive>,
-    /// Angular momentum quantum numbers [l, m, n]
-    pub angular: [u32; 3],
 }
 
 impl BasisFunction {
@@ -36,7 +34,6 @@ impl BasisFunction {
         Self {
             center,
             primitives,
-            angular: [0, 0, 0], // s-orbital
         }
     }
 

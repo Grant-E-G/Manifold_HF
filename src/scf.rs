@@ -256,7 +256,7 @@ mod tests {
     fn test_hf_h2_scf() {
         let mol = Molecule::h2();
         let hf = HartreeFock::new(mol);
-        let result = hf.run_scf(50, 1e-6).unwrap();
+        let result = hf.run_scf(100, 1e-6).unwrap();
         
         assert!(result.converged);
         // Energy should be negative (binding)

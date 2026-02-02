@@ -1,0 +1,10 @@
+Source: Basis Set Exchange (BSE) STO-3G basis
+Retrieval date: 2026-02-02
+API endpoint (basis data): http://www.basissetexchange.org/api/basis/sto-3g/format/json/
+API endpoint (references): http://www.basissetexchange.org/api/references/sto-3g/format/txt/
+
+The raw JSON data is stored in:
+  data/sto-3g.json
+
+Primary literature references are stored in:
+  data/sto-3g.references.txt

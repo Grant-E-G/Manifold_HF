@@ -22,7 +22,7 @@ fn calculate_molecule(name: &str, molecule: Molecule) {
     let hf = HartreeFock::new(molecule);
 
     println!("=== Standard SCF ===");
-    match hf.run_scf(50, 1e-6) {
+    match hf.run_scf(100, 1e-6) {
         Ok(result) => {
             println!("Converged: {}", result.converged);
             println!("Total energy: {:.10} Hartree", result.energy);
