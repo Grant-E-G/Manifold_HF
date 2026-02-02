@@ -115,7 +115,7 @@ fn main() {
     options.description = Some(description_override.unwrap_or(default_description));
 
     let svg = if all_orbitals {
-        let hf = HartreeFock::new(molecule.clone());
+        let hf = HartreeFock::new(molecule.clone()).expect("Failed to build STO-3G basis");
         let result = hf
             .run_scf(100, 1e-6)
             .expect("SCF failed while preparing orbital visualization");
@@ -134,7 +134,7 @@ fn main() {
         )
         .expect("Failed to render SVG with orbitals")
     } else if let Some(index) = orbital_index {
-        let hf = HartreeFock::new(molecule.clone());
+        let hf = HartreeFock::new(molecule.clone()).expect("Failed to build STO-3G basis");
         let result = hf
             .run_scf(100, 1e-6)
             .expect("SCF failed while preparing orbital visualization");

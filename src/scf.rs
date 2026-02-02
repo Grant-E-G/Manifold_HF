@@ -23,17 +23,24 @@ pub struct HartreeFock {
 
 impl HartreeFock {
     /// Creates a new Hartree-Fock calculator
-    pub fn new(molecule: Molecule) -> Self {
-        let basis = BasisSet::minimal(&molecule);
+    pub fn new(molecule: Molecule) -> Result<Self, String> {
+        let basis = BasisSet::sto3g(&molecule)?;
+        let max_l = basis.max_angular_momentum();
+        if max_l > 0 {
+            return Err(format!(
+                "STO-3G basis includes angular momentum up to l={}, but angular-momentum integrals are not implemented yet",
+                max_l
+            ));
+        }
         let overlap = basis.overlap_matrix();
         let core_hamiltonian = basis.core_hamiltonian(&molecule);
 
-        Self {
+        Ok(Self {
             molecule,
             basis,
             overlap,
             core_hamiltonian,
-        }
+        })
     }
 
     /// Performs standard SCF iteration (Roothaan-Hall equations)
@@ -255,7 +262,7 @@ mod tests {
     #[test]
     fn test_hf_h2_scf() {
         let mol = Molecule::h2();
-        let hf = HartreeFock::new(mol);
+        let hf = HartreeFock::new(mol).unwrap();
         let result = hf.run_scf(100, 1e-6).unwrap();
         
         assert!(result.converged);
@@ -266,7 +273,7 @@ mod tests {
     #[test]
     fn test_hf_h2_manifold() {
         let mol = Molecule::h2();
-        let hf = HartreeFock::new(mol);
+        let hf = HartreeFock::new(mol).unwrap();
         let result = hf.run_scf_manifold(100, 1e-6).unwrap();
         
         assert!(result.converged);

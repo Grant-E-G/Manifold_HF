@@ -19,7 +19,7 @@ fn calculate_molecule(name: &str, molecule: Molecule) {
     println!("Nuclear repulsion energy: {:.6} Hartree\n", molecule.nuclear_repulsion());
 
     // Create Hartree-Fock calculator
-    let hf = HartreeFock::new(molecule);
+    let hf = HartreeFock::new(molecule).expect("Failed to build STO-3G basis");
 
     println!("=== Standard SCF ===");
     match hf.run_scf(100, 1e-6) {

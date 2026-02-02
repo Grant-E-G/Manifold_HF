@@ -2,8 +2,12 @@
 //!
 //! This module provides Gaussian basis functions in a functional style.
 
+use crate::basis_data::STO3G_JSON;
 use crate::linalg::{Matrix, zeros};
 use crate::molecule::Molecule;
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Represents a primitive Gaussian function
 #[derive(Debug, Clone)]
@@ -27,13 +31,16 @@ pub struct BasisFunction {
     pub center: [f64; 3],
     /// Primitive Gaussians
     pub primitives: Vec<GaussianPrimitive>,
+    /// Angular momentum exponents [l, m, n]
+    pub angular: [u32; 3],
 }
 
 impl BasisFunction {
-    pub fn new(center: [f64; 3], primitives: Vec<GaussianPrimitive>) -> Self {
+    pub fn new(center: [f64; 3], primitives: Vec<GaussianPrimitive>, angular: [u32; 3]) -> Self {
         Self {
             center,
             primitives,
+            angular,
         }
     }
 
@@ -44,108 +51,213 @@ impl BasisFunction {
         let dz = point[2] - self.center[2];
         let r2 = dx * dx + dy * dy + dz * dz;
 
-        self.primitives.iter()
+        let ang = dx.powi(self.angular[0] as i32)
+            * dy.powi(self.angular[1] as i32)
+            * dz.powi(self.angular[2] as i32);
+
+        self.primitives
+            .iter()
             .map(|p| p.coefficient * (-p.exponent * r2).exp())
-            .sum()
+            .sum::<f64>()
+            * ang
     }
 }
 
-/// A minimal basis set (STO-3G like)
+/// STO-3G basis set
 pub struct BasisSet {
     pub functions: Vec<BasisFunction>,
 }
 
-impl BasisSet {
-    /// Creates a minimal basis set for a molecule
-    pub fn minimal(molecule: &Molecule) -> Self {
-        let functions = molecule.atoms.iter()
-            .flat_map(|atom| Self::minimal_atom_basis(atom.atomic_number, atom.position))
-            .collect();
+#[derive(Debug, Deserialize)]
+struct BseBasis {
+    elements: HashMap<String, BseElement>,
+}
 
-        Self { functions }
+#[derive(Debug, Deserialize)]
+struct BseElement {
+    electron_shells: Vec<BseShell>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BseShell {
+    angular_momentum: Vec<u32>,
+    exponents: Vec<String>,
+    coefficients: Vec<Vec<String>>,
+}
+
+/// STO-3G data is sourced from the Basis Set Exchange (see data/sto-3g.SOURCE.txt).
+fn sto3g_data() -> Result<&'static BseBasis, String> {
+    static STO3G_CACHE: OnceLock<Result<BseBasis, String>> = OnceLock::new();
+    match STO3G_CACHE.get_or_init(|| serde_json::from_str(STO3G_JSON).map_err(|e| e.to_string()))
+    {
+        Ok(data) => Ok(data),
+        Err(err) => Err(err.clone()),
+    }
+}
+
+fn parse_f64_list(values: &[String]) -> Result<Vec<f64>, String> {
+    values
+        .iter()
+        .map(|value| {
+            value
+                .parse::<f64>()
+                .map_err(|err| format!("{} ({})", value, err))
+        })
+        .collect()
+}
+
+fn cartesian_exponents(l: u32) -> Vec<[u32; 3]> {
+    let mut exps = Vec::new();
+    for lx in (0..=l).rev() {
+        for ly in (0..=l - lx).rev() {
+            let lz = l - lx - ly;
+            exps.push([lx, ly, lz]);
+        }
+    }
+    exps
+}
+
+fn double_factorial(mut n: i32) -> f64 {
+    if n <= 0 {
+        return 1.0;
+    }
+    let mut value = 1.0;
+    while n > 1 {
+        value *= n as f64;
+        n -= 2;
+    }
+    value
+}
+
+fn primitive_normalization(alpha: f64, angular: [u32; 3]) -> f64 {
+    let l = angular[0] as i32;
+    let m = angular[1] as i32;
+    let n = angular[2] as i32;
+    let lmn = (l + m + n) as f64;
+    let prefactor = (2.0 * alpha / std::f64::consts::PI).powf(0.75);
+    let ang_factor = (4.0 * alpha).powf(0.5 * lmn);
+    let denom = (double_factorial(2 * l - 1)
+        * double_factorial(2 * m - 1)
+        * double_factorial(2 * n - 1))
+        .sqrt();
+    prefactor * ang_factor / denom
+}
+
+fn primitive_overlap_same_center(alpha: f64, beta: f64, angular: [u32; 3]) -> f64 {
+    let l = angular[0] as i32;
+    let m = angular[1] as i32;
+    let n = angular[2] as i32;
+    let gamma = alpha + beta;
+    let lsum = l + m + n;
+    let df = double_factorial(2 * l - 1)
+        * double_factorial(2 * m - 1)
+        * double_factorial(2 * n - 1);
+    let denom = 2.0_f64.powi(lsum) * gamma.powf(lsum as f64 + 1.5);
+    std::f64::consts::PI.powf(1.5) * df / denom
+}
+
+fn build_primitives(
+    exponents: &[f64],
+    coefficients: &[f64],
+    angular: [u32; 3],
+) -> Vec<GaussianPrimitive> {
+    let mut primitives: Vec<GaussianPrimitive> = exponents
+        .iter()
+        .zip(coefficients.iter())
+        .map(|(&exp, &coeff)| {
+            let norm = primitive_normalization(exp, angular);
+            GaussianPrimitive::new(exp, coeff * norm)
+        })
+        .collect();
+
+    let mut overlap_sum = 0.0;
+    for i in 0..primitives.len() {
+        for j in 0..primitives.len() {
+            let s = primitive_overlap_same_center(
+                primitives[i].exponent,
+                primitives[j].exponent,
+                angular,
+            );
+            overlap_sum += primitives[i].coefficient * primitives[j].coefficient * s;
+        }
     }
 
-    /// Creates minimal basis for a single atom (STO-3G style)
-    fn minimal_atom_basis(atomic_number: u32, position: [f64; 3]) -> Vec<BasisFunction> {
-        match atomic_number {
-            1 => {
-                // Hydrogen: 1s orbital (STO-3G)
-                vec![BasisFunction::new(
-                    position,
-                    vec![
-                        GaussianPrimitive::new(3.425250914, 0.154328967),
-                        GaussianPrimitive::new(0.623913730, 0.535328142),
-                        GaussianPrimitive::new(0.168855404, 0.444634542),
-                    ],
-                )]
-            }
-            6..=10 => {
-                // C-Ne: 1s, 2s, 2px, 2py, 2pz orbitals (5 basis functions)
-                // NOTE: Simplified implementation - p orbitals use same angular=[0,0,0]
-                // In a complete implementation, these would have angular=[1,0,0], [0,1,0], [0,0,1]
-                // and require proper p-type integral evaluation
-                vec![
-                    // 1s orbital (core)
-                    BasisFunction::new(
-                        position,
-                        vec![
-                            GaussianPrimitive::new(10.0, 0.4),
-                            GaussianPrimitive::new(2.0, 0.6),
-                        ],
-                    ),
-                    // 2s orbital (valence)
-                    BasisFunction::new(
-                        position,
-                        vec![
-                            GaussianPrimitive::new(1.5, 0.5),
-                            GaussianPrimitive::new(0.4, 0.5),
-                        ],
-                    ),
-                    // 2p orbitals (3 functions for x, y, z)
-                    BasisFunction::new(
-                        position,
-                        vec![
-                            GaussianPrimitive::new(1.0, 0.5),
-                            GaussianPrimitive::new(0.3, 0.5),
-                        ],
-                    ),
-                    BasisFunction::new(
-                        position,
-                        vec![
-                            GaussianPrimitive::new(1.0, 0.5),
-                            GaussianPrimitive::new(0.3, 0.5),
-                        ],
-                    ),
-                    BasisFunction::new(
-                        position,
-                        vec![
-                            GaussianPrimitive::new(1.0, 0.5),
-                            GaussianPrimitive::new(0.3, 0.5),
-                        ],
-                    ),
-                ]
-            }
-            2..=5 => {
-                // He-B: 1s and 2s orbitals (simplified)
-                vec![
-                    BasisFunction::new(
-                        position,
-                        vec![
-                            GaussianPrimitive::new(5.0, 0.5),
-                            GaussianPrimitive::new(1.0, 0.5),
-                        ],
-                    ),
-                    BasisFunction::new(
-                        position,
-                        vec![
-                            GaussianPrimitive::new(1.0, 0.5),
-                            GaussianPrimitive::new(0.2, 0.5),
-                        ],
-                    ),
-                ]
-            }
-            _ => vec![],
+    if overlap_sum > 0.0 {
+        let norm = 1.0 / overlap_sum.sqrt();
+        for prim in &mut primitives {
+            prim.coefficient *= norm;
         }
+    }
+
+    primitives
+}
+
+impl BasisSet {
+    /// Creates a minimal basis set for a molecule
+    pub fn minimal(molecule: &Molecule) -> Result<Self, String> {
+        Self::sto3g(molecule)
+    }
+
+    /// Builds STO-3G basis functions using data from the Basis Set Exchange.
+    pub fn sto3g(molecule: &Molecule) -> Result<Self, String> {
+        let data = sto3g_data()?;
+        let mut functions = Vec::new();
+
+        for atom in &molecule.atoms {
+            let key = atom.atomic_number.to_string();
+            let element = data.elements.get(&key).ok_or_else(|| {
+                format!("STO-3G data missing element Z={}", atom.atomic_number)
+            })?;
+
+            for shell in &element.electron_shells {
+                if shell.angular_momentum.len() != shell.coefficients.len() {
+                    return Err(format!(
+                        "STO-3G shell mismatch for Z={}: angular_momentum {:?} coefficients {}",
+                        atom.atomic_number,
+                        shell.angular_momentum,
+                        shell.coefficients.len()
+                    ));
+                }
+
+                let exponents = parse_f64_list(&shell.exponents).map_err(|err| {
+                    format!("STO-3G exponent parse error for Z={}: {}", atom.atomic_number, err)
+                })?;
+
+                for (idx, &l) in shell.angular_momentum.iter().enumerate() {
+                    let coeffs = parse_f64_list(&shell.coefficients[idx]).map_err(|err| {
+                        format!(
+                            "STO-3G coefficient parse error for Z={}, l={}: {}",
+                            atom.atomic_number, l, err
+                        )
+                    })?;
+                    if coeffs.len() != exponents.len() {
+                        return Err(format!(
+                            "STO-3G shell length mismatch for Z={}, l={}: {} exponents vs {} coeffs",
+                            atom.atomic_number,
+                            l,
+                            exponents.len(),
+                            coeffs.len()
+                        ));
+                    }
+
+                    for angular in cartesian_exponents(l) {
+                        let primitives = build_primitives(&exponents, &coeffs, angular);
+                        functions.push(BasisFunction::new(atom.position, primitives, angular));
+                    }
+                }
+            }
+        }
+
+        Ok(Self { functions })
+    }
+
+    /// Maximum angular momentum (l) in the basis.
+    pub fn max_angular_momentum(&self) -> u32 {
+        self.functions
+            .iter()
+            .map(|f| f.angular[0] + f.angular[1] + f.angular[2])
+            .max()
+            .unwrap_or(0)
     }
 
     /// Number of basis functions
@@ -263,14 +375,14 @@ mod tests {
     #[test]
     fn test_basis_h2() {
         let mol = Molecule::h2();
-        let basis = BasisSet::minimal(&mol);
+        let basis = BasisSet::minimal(&mol).unwrap();
         assert_eq!(basis.size(), 2); // Two hydrogen atoms = 2 basis functions
     }
 
     #[test]
     fn test_overlap_matrix() {
         let mol = Molecule::h2();
-        let basis = BasisSet::minimal(&mol);
+        let basis = BasisSet::minimal(&mol).unwrap();
         let s = basis.overlap_matrix();
         
         // Diagonal elements should be approximately 1 for normalized functions

@@ -25,7 +25,7 @@ fn main() {
         
         print_molecule_info(&molecule, name);
         
-        let hf = HartreeFock::new(molecule);
+        let hf = HartreeFock::new(molecule).expect("Failed to build STO-3G basis");
         
         println!("\nRunning manifold-optimized Hartree-Fock...");
         match hf.run_scf_manifold(100, 1e-6) {

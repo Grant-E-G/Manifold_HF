@@ -19,7 +19,7 @@ fn main() {
     println!("  Nuclear repulsion: {:.6} Hartree\n", h2.nuclear_repulsion());
 
     // Initialize Hartree-Fock calculator
-    let hf = HartreeFock::new(h2);
+    let hf = HartreeFock::new(h2).expect("Failed to build STO-3G basis");
 
     // Run manifold-optimized SCF
     println!("Starting manifold-optimized Hartree-Fock calculation...\n");
