@@ -84,6 +84,35 @@ impl Molecule {
         energy
     }
 
+    /// Computes the distance between two atoms in Bohr.
+    pub fn bond_length(&self, i: usize, j: usize) -> f64 {
+        let a = self.atoms[i].position;
+        let b = self.atoms[j].position;
+        let dx = a[0] - b[0];
+        let dy = a[1] - b[1];
+        let dz = a[2] - b[2];
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+
+    /// Computes the bond angle (i-j-k) in degrees.
+    pub fn bond_angle(&self, i: usize, j: usize, k: usize) -> f64 {
+        let a = self.atoms[i].position;
+        let b = self.atoms[j].position;
+        let c = self.atoms[k].position;
+        let v1 = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let v2 = [c[0] - b[0], c[1] - b[1], c[2] - b[2]];
+        let dot = v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
+        let norm1 = (v1[0] * v1[0] + v1[1] * v1[1] + v1[2] * v1[2]).sqrt();
+        let norm2 = (v2[0] * v2[0] + v2[1] * v2[1] + v2[2] * v2[2]).sqrt();
+        let mut cos_theta = dot / (norm1 * norm2);
+        if cos_theta > 1.0 {
+            cos_theta = 1.0;
+        } else if cos_theta < -1.0 {
+            cos_theta = -1.0;
+        }
+        cos_theta.acos().to_degrees()
+    }
+
     /// Creates a hydrogen molecule (H2) at standard bond length
     pub fn h2() -> Self {
         let bond_length = 1.4; // Bohr
@@ -156,6 +185,19 @@ mod tests {
         let h2o = Molecule::h2o();
         assert_eq!(h2o.num_electrons(), 10);
         assert_eq!(h2o.num_occupied(), 5);
+    }
+
+    #[test]
+    fn test_h2_bond_length() {
+        let h2 = Molecule::h2();
+        assert_abs_diff_eq!(h2.bond_length(0, 1), 1.4, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn test_h2o_bond_angle() {
+        let h2o = Molecule::h2o();
+        let angle = h2o.bond_angle(1, 0, 2);
+        assert!(angle > 90.0 && angle < 120.0);
     }
 
     #[test]

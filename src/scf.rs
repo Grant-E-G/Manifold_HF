@@ -19,27 +19,24 @@ pub struct HartreeFock {
     pub overlap: Matrix,
     /// Core Hamiltonian matrix
     pub core_hamiltonian: Matrix,
+    /// Two-electron repulsion integrals (ij|kl)
+    pub eri: Vec<f64>,
 }
 
 impl HartreeFock {
     /// Creates a new Hartree-Fock calculator
     pub fn new(molecule: Molecule) -> Result<Self, String> {
         let basis = BasisSet::sto3g(&molecule)?;
-        let max_l = basis.max_angular_momentum();
-        if max_l > 0 {
-            return Err(format!(
-                "STO-3G basis includes angular momentum up to l={}, but angular-momentum integrals are not implemented yet",
-                max_l
-            ));
-        }
         let overlap = basis.overlap_matrix();
         let core_hamiltonian = basis.core_hamiltonian(&molecule);
+        let eri = basis.two_electron_integrals();
 
         Ok(Self {
             molecule,
             basis,
             overlap,
             core_hamiltonian,
+            eri,
         })
     }
 
@@ -112,40 +109,48 @@ impl HartreeFock {
         let n_basis = self.basis.size();
         let n_occ = self.molecule.num_occupied();
 
+        let s_inv_sqrt = symmetric_orthogonalizer(&self.overlap)?;
+        let s_sqrt = symmetric_sqrt(&self.overlap)?;
+
         // Initialize manifold optimizer
         let manifold = StiefelManifold::new(n_basis, n_occ);
 
         // Initial guess for occupied orbitals
         let c_initial = self.initial_guess()?;
         let c_occ_initial = c_initial.slice(s![.., 0..n_occ]).to_owned();
+        let y_initial = matmul(&s_sqrt, &c_occ_initial);
 
         println!("Running Hartree-Fock with Manifold optimization");
         println!("Basis functions: {}, Occupied orbitals: {}", n_basis, n_occ);
 
         // Energy function for manifold optimization
-        let energy_fn = |c_occ: &Matrix| -> f64 {
-            let density = self.build_density(c_occ);
+        let energy_fn = |y: &Matrix| -> f64 {
+            let c_occ = matmul(&s_inv_sqrt, y);
+            let density = self.build_density(&c_occ);
             let fock = self.build_fock(&density);
             self.compute_energy(&density, &fock)
         };
 
         // Gradient function for manifold optimization
-        let grad_fn = |c_occ: &Matrix| -> Matrix {
-            let density = self.build_density(c_occ);
+        let grad_fn = |y: &Matrix| -> Matrix {
+            let c_occ = matmul(&s_inv_sqrt, y);
+            let density = self.build_density(&c_occ);
             let fock = self.build_fock(&density);
             // Gradient: 4 * Fock * C_occ
-            &fock.dot(c_occ) * 4.0
+            let grad_c = &fock.dot(&c_occ) * 4.0;
+            matmul(&transpose(&s_inv_sqrt), &grad_c)
         };
 
         // Optimize on manifold
-        let (c_occ_opt, final_energy) = manifold.optimize_cg(
-            &c_occ_initial,
+        let (y_opt, final_energy) = manifold.optimize_cg(
+            &y_initial,
             grad_fn,
             energy_fn,
             max_iter,
             tol,
         )?;
 
+        let c_occ_opt = matmul(&s_inv_sqrt, &y_opt);
         let density = self.build_density(&c_occ_opt);
 
         // Extend to full coefficient matrix (for compatibility)
@@ -184,18 +189,21 @@ impl HartreeFock {
 
     /// Builds two-electron part of Fock matrix (simplified)
     fn build_g_matrix(&self, density: &Matrix) -> Matrix {
-        // Approximate two-electron repulsion scale factor
-        const APPROX_ERI_SCALE: f64 = 0.1;
-        
         let n = self.basis.size();
         let mut g = Matrix::zeros((n, n));
 
-        // Simplified two-electron contribution
-        // NOTE: This is a crude approximation for educational purposes
-        // Real implementation would use proper electron repulsion integrals (ERIs)
         for i in 0..n {
             for j in 0..n {
-                g[[i, j]] = density[[i, j]] * APPROX_ERI_SCALE;
+                let mut sum = 0.0;
+                for k in 0..n {
+                    for l in 0..n {
+                        let dkl = density[[k, l]];
+                        let ijkl = self.eri_index(i, j, k, l, n);
+                        let ikjl = self.eri_index(i, k, j, l, n);
+                        sum += dkl * (self.eri[ijkl] - 0.5 * self.eri[ikjl]);
+                    }
+                }
+                g[[i, j]] = sum;
             }
         }
 
@@ -204,31 +212,31 @@ impl HartreeFock {
 
     /// Solves Fock equation: FC = SCE
     ///
-    /// Uses canonical orthogonalization
-    /// 
-    /// NOTE: This simplified implementation assumes S ≈ I (near-orthogonal basis).
-    /// For accurate results with non-orthogonal basis sets, should use S^{-1/2}
-    /// transformation (Löwdin orthogonalization) before diagonalization.
+    /// Uses Löwdin symmetric orthogonalization (S^{-1/2}) for FC = SCE.
     fn solve_fock(&self, fock: &Matrix) -> Result<(Matrix, Vector), String> {
-        let (energies, c) = eig(fock)?;
+        let x = symmetric_orthogonalizer(&self.overlap)?;
+        let f_prime = matmul(&transpose(&x), &matmul(fock, &x));
+        let (energies, c_prime) = eig(&f_prime)?;
 
         // Sort by energy
         let mut indices: Vec<usize> = (0..energies.len()).collect();
         indices.sort_by(|&i, &j| energies[i].partial_cmp(&energies[j]).unwrap());
 
         // Reorder columns
-        let n = c.nrows();
+        let n = c_prime.nrows();
         let mut c_sorted = Matrix::zeros((n, n));
         for (new_j, &old_j) in indices.iter().enumerate() {
             for i in 0..n {
-                c_sorted[[i, new_j]] = c[[i, old_j]];
+                c_sorted[[i, new_j]] = c_prime[[i, old_j]];
             }
         }
 
         let energies_sorted = indices.iter().map(|&i| energies[i]).collect::<Vec<_>>();
         let energies_vec = Vector::from_vec(energies_sorted);
 
-        Ok((c_sorted, energies_vec))
+        let c = matmul(&x, &c_sorted);
+
+        Ok((c, energies_vec))
     }
 
     /// Computes electronic energy
@@ -240,6 +248,48 @@ impl HartreeFock {
         
         electronic + nuclear
     }
+}
+
+impl HartreeFock {
+    fn eri_index(&self, i: usize, j: usize, k: usize, l: usize, n: usize) -> usize {
+        ((i * n + j) * n + k) * n + l
+    }
+}
+
+fn symmetric_orthogonalizer(overlap: &Matrix) -> Result<Matrix, String> {
+    let (eigenvalues, eigenvectors) = eig(overlap)?;
+    let n = eigenvalues.len();
+    let mut inv_sqrt = Matrix::zeros((n, n));
+    for i in 0..n {
+        let value = eigenvalues[i];
+        if value <= 1e-12 {
+            return Err(format!(
+                "overlap matrix eigenvalue too small or negative: {}",
+                value
+            ));
+        }
+        inv_sqrt[[i, i]] = 1.0 / value.sqrt();
+    }
+    let x = matmul(&matmul(&eigenvectors, &inv_sqrt), &transpose(&eigenvectors));
+    Ok(x)
+}
+
+fn symmetric_sqrt(overlap: &Matrix) -> Result<Matrix, String> {
+    let (eigenvalues, eigenvectors) = eig(overlap)?;
+    let n = eigenvalues.len();
+    let mut sqrt = Matrix::zeros((n, n));
+    for i in 0..n {
+        let value = eigenvalues[i];
+        if value <= 0.0 {
+            return Err(format!(
+                "overlap matrix eigenvalue too small or negative: {}",
+                value
+            ));
+        }
+        sqrt[[i, i]] = value.sqrt();
+    }
+    let s = matmul(&matmul(&eigenvectors, &sqrt), &transpose(&eigenvectors));
+    Ok(s)
 }
 
 /// Results from SCF calculation

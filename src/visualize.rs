@@ -943,6 +943,9 @@ fn compute_orbital_values(
     let dx = (bounds.max_x - bounds.min_x) / (grid as f64 - 1.0);
     let dy = (bounds.max_y - bounds.min_y) / (grid as f64 - 1.0);
 
+    let coeffs_cart = basis.to_cartesian_coefficients(coefficients);
+    let n_cart = basis.cartesian_size();
+
     let mut values = Vec::with_capacity(grid * grid);
     let mut max_abs: f64 = 0.0;
     let mut edge_max_abs: f64 = 0.0;
@@ -953,12 +956,12 @@ fn compute_orbital_values(
             let y = bounds.min_y + dy * j as f64;
             let point = expand_point(projection, x, y, settings.plane_offset);
             let mut value = 0.0;
-            for k in 0..n_basis {
-                let coeff = coefficients[[k, settings.orbital_index]];
+            for k in 0..n_cart {
+                let coeff = coeffs_cart[[k, settings.orbital_index]];
                 if coeff.abs() < 1e-10 {
                     continue;
                 }
-                value += coeff * basis.functions[k].evaluate(point);
+                value += coeff * basis.cartesian_functions[k].evaluate(point);
             }
             max_abs = max_abs.max(value.abs());
             if i == 0 || j == 0 || i + 1 == grid || j + 1 == grid {

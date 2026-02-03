@@ -26,3 +26,4 @@ target
 /target
 *.svg
 water_orbital.svg
+data/benchmarks.json

@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "notes": "Benchmark targets for generating reference HF/STO-3G energies and geometry measurements.",
+  "molecules": [
+    {
+      "name": "H2",
+      "smiles": "[H][H]",
+      "charge": 0,
+      "multiplicity": 1,
+      "tags": ["small", "quick"]
+    },
+    {
+      "name": "H2O",
+      "smiles": "O",
+      "charge": 0,
+      "multiplicity": 1,
+      "tags": ["small", "quick"]
+    },
+    {
+      "name": "D2O",
+      "smiles": "[2H]O[2H]",
+      "charge": 0,
+      "multiplicity": 1,
+      "tags": ["small", "quick"]
+    },
+    {
+      "name": "Methanol",
+      "smiles": "CO",
+      "charge": 0,
+      "multiplicity": 1,
+      "tags": ["medium", "quick"]
+    },
+    {
+      "name": "Ethanol",
+      "smiles": "CCO",
+      "charge": 0,
+      "multiplicity": 1,
+      "tags": ["medium", "quick"]
+    },
+    {
+      "name": "Benzene",
+      "smiles": "c1ccccc1",
+      "charge": 0,
+      "multiplicity": 1,
+      "tags": ["medium", "quick"]
+    },
+    {
+      "name": "Polyethylene Dimer (Butane)",
+      "smiles": "CCCC",
+      "charge": 0,
+      "multiplicity": 1,
+      "tags": ["polymer", "heavy", "full"]
+    },
+    {
+      "name": "Polyethylene Trimer (Hexane)",
+      "smiles": "CCCCCC",
+      "charge": 0,
+      "multiplicity": 1,
+      "tags": ["polymer", "heavy", "full"]
+    },
+    {
+      "name": "Glycylglycine (Dipeptide)",
+      "smiles": "NCC(=O)NCC(=O)O",
+      "charge": 0,
+      "multiplicity": 1,
+      "tags": ["peptide", "heavy", "full"]
+    }
+  ]
+}

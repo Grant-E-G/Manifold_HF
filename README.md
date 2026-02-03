@@ -184,13 +184,46 @@ STO-3G parameters are sourced from the Basis Set Exchange (BSE). The raw JSON is
 `data/sto-3g.json`, with citations in `data/sto-3g.references.txt` and provenance in
 `data/sto-3g.SOURCE.txt`. The data is imported in code via `src/basis_data.rs`.
 
-**Status note**: One‑electron/two‑electron integrals are still s‑type only. Building HF
-with p/d shells will currently return an error until angular‑momentum integrals and ERIs
-are implemented.
+**Status note**: One‑ and two‑electron integrals are evaluated with analytic Cartesian
+Gaussian formulas and transformed to real spherical functions. The d‑shell transform is
+implemented; higher‑l transforms can be added as needed.
 
 ### Integral Evaluation
 
-The current implementation uses simplified integral approximations suitable for small systems and educational purposes. For production calculations, more sophisticated integral evaluation would be needed.
+One‑ and two‑electron integrals are evaluated analytically for Cartesian Gaussian functions and
+transformed to real spherical functions. The Boys function is computed via an erf‑based
+approximation suitable for small systems. For production workloads, a dedicated integral engine
+and higher‑l spherical transforms would be required.
+
+## Benchmarks
+
+Benchmark targets live in `data/benchmarks.targets.json`. Reference values are generated with
+PySCF HF/STO‑3G on RDKit ETKDGv3 + UFF geometries and stored in `data/benchmarks.json`
+(ignored by git). See `data/benchmarks.SOURCE.md` for generation details.
+The benchmark file stores total energy (electronic + nuclear), electronic energy, and
+bond length/angle measurements.
+
+Generate benchmarks:
+
+```bash
+conda env create -f environment.yml
+conda activate manifold-hf-bench
+python scripts/generate_benchmarks.py
+```
+
+Run benchmark comparisons (quick set by default):
+
+```bash
+MANIFOLD_HF_BENCHMARKS=quick cargo test --test benchmarks
+```
+
+Run the full set (includes polymers + peptide):
+
+```bash
+MANIFOLD_HF_BENCHMARKS=full cargo test --test benchmarks
+```
+
+If `data/benchmarks.json` is missing, the benchmark test will skip.
 
 ## Testing
 
