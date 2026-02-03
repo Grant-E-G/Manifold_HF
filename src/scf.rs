@@ -176,9 +176,9 @@ impl HartreeFock {
             .map(|(c, _)| c)
     }
 
-    /// Builds density matrix from occupied orbitals: P = C_occ * C_occ^T
+    /// Builds density matrix from occupied orbitals: P = 2 * C_occ * C_occ^T
     fn build_density(&self, c_occ: &Matrix) -> Matrix {
-        matmul(c_occ, &transpose(c_occ))
+        matmul(c_occ, &transpose(c_occ)) * 2.0
     }
 
     /// Builds Fock matrix: F = H_core + G(P)

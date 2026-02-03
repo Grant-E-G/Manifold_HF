@@ -217,13 +217,16 @@ Run benchmark comparisons (quick set by default):
 MANIFOLD_HF_BENCHMARKS=quick cargo test --test benchmarks
 ```
 
-Run the full set (includes polymers + peptide):
+Quick runs the `small` tagged molecules (H2, H2O, D2O). Run the full set
+(includes alcohols, benzene, polymers, peptide):
 
 ```bash
 MANIFOLD_HF_BENCHMARKS=full cargo test --test benchmarks
 ```
 
 If `data/benchmarks.json` is missing, the benchmark test will skip.
+Energy comparisons currently use a 6% relative tolerance while the integral
+engine is still being refined for heavier systems.
 
 ## Testing
 

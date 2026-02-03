@@ -972,6 +972,16 @@ mod tests {
     }
 
     #[test]
+    fn test_overlap_diagonal_h2o() {
+        let mol = Molecule::h2o();
+        let basis = BasisSet::minimal(&mol).unwrap();
+        let s = basis.overlap_matrix();
+        for i in 0..basis.size() {
+            assert_abs_diff_eq!(s[[i, i]], 1.0, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
     fn test_d_transform_orthonormal() {
         let m = cartesian_to_spherical_matrix(2).unwrap();
         let mtm = matmul(&m, &transpose(&m));
