@@ -27,3 +27,13 @@ target
 *.svg
 water_orbital.svg
 data/benchmarks.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Generated orbital visualization artifacts
+*.cube
+*_orb*.html
+*orbitals*.html
+out/

@@ -228,6 +228,67 @@ If `data/benchmarks.json` is missing, the benchmark test will skip.
 Energy comparisons currently use a 6% relative tolerance while the integral
 engine is still being refined for heavier systems.
 
+## 3D Visualization
+
+Export a molecular orbital to a Gaussian cube file:
+
+```bash
+cargo run --example export_orbital_cube -- h2o --orbital 0 --out h2o_orb0.cube --grid 40 --padding 5.0
+```
+
+Render an interactive 3D HTML visualization (atoms + orbital distributions + orbital center of mass).
+
+By default the viewer renders **distribution point clouds** (not isosurfaces), which is generally better for debugging:
+
+```bash
+python scripts/visualize_orbitals_3d.py --cube h2o_orb0.cube --out h2o_orb0.html
+```
+
+To render distribution slice planes instead:
+
+```bash
+python scripts/visualize_orbitals_3d.py --cube h2o_orb0.cube --render slices --out h2o_orb0_slices.html
+```
+
+If you want traditional isosurfaces:
+
+```bash
+python scripts/visualize_orbitals_3d.py --cube h2o_orb0.cube --render isosurface --out h2o_orb0_iso.html
+```
+
+Atoms-only view:
+
+```bash
+python scripts/visualize_orbitals_3d.py --cube h2o_orb0.cube --atoms-only --out h2o_atoms.html
+```
+
+Multiple orbitals can be toggled on/off via the Plotly legend:
+
+```bash
+cargo run --example export_orbital_cube -- h2o --orbital 0,1,2 --out h2o.cube
+python scripts/visualize_orbitals_3d.py --cube h2o_orb0.cube --cube h2o_orb1.cube --cube h2o_orb2.cube --out h2o_orbitals.html
+```
+
+To export all orbitals (H2O/STO-3G has 7 MOs) and visualize them:
+
+```bash
+cargo run --example export_orbital_cube -- h2o --all-orbitals --out out/h2o.cube
+python scripts/visualize_orbitals_3d.py --cube-dir out --out out/h2o_all_orbitals.html
+```
+
+If an orbital looks "cut off", increase cube padding (or use `--auto-expand`) and/or increase the viewer isovalue:
+
+```bash
+cargo run --example export_orbital_cube -- h2o --orbital 0 --out h2o_orb0.cube --padding 8.0
+python scripts/visualize_orbitals_3d.py --cube h2o_orb0.cube --iso-quantile 0.9995 --show-cube-bounds --out h2o_orb0.html
+```
+
+Overlay the RDKit/PySCF benchmark geometry (aligned to the predicted geometry):
+
+```bash
+python scripts/visualize_orbitals_3d.py --cube h2o_orb0.cube --reference data/benchmarks.json --reference-name H2O --out h2o_compare.html
+```
+
 ## Testing
 
 Run the full test suite:

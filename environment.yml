@@ -6,3 +6,4 @@ dependencies:
   - numpy
   - pyscf
   - rdkit
+  - plotly
