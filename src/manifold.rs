@@ -4,7 +4,7 @@
 //! which is the set of n×p matrices with orthonormal columns.
 //! This is crucial for maintaining orthonormality of molecular orbitals.
 
-use crate::linalg::{Matrix, matmul, transpose, project_stiefel, frobenius_norm};
+use crate::linalg::{frobenius_norm, matmul, project_stiefel, transpose, Matrix};
 
 /// Represents the Stiefel manifold St(n, p) = {X ∈ ℝ^{n×p} : X^T X = I_p}
 pub struct StiefelManifold {
@@ -82,7 +82,10 @@ impl StiefelManifold {
             // Check convergence
             let grad_norm = frobenius_norm(&riem_grad);
             if grad_norm < tol {
-                println!("Converged at iteration {} with gradient norm {:.2e}", iter, grad_norm);
+                println!(
+                    "Converged at iteration {} with gradient norm {:.2e}",
+                    iter, grad_norm
+                );
                 break;
             }
 
@@ -122,7 +125,10 @@ impl StiefelManifold {
 
             let grad_norm = frobenius_norm(&riem_grad);
             if grad_norm < tol {
-                println!("CG converged at iteration {} with gradient norm {:.2e}", iter, grad_norm);
+                println!(
+                    "CG converged at iteration {} with gradient norm {:.2e}",
+                    iter, grad_norm
+                );
                 break;
             }
 
@@ -131,8 +137,10 @@ impl StiefelManifold {
             energy = energy_fn(&x);
 
             if iter % 10 == 0 {
-                println!("Iteration {}: energy = {:.6}, gradient norm = {:.2e}", 
-                         iter, energy, grad_norm);
+                println!(
+                    "Iteration {}: energy = {:.6}, gradient norm = {:.2e}",
+                    iter, energy, grad_norm
+                );
             }
         }
 
@@ -143,21 +151,17 @@ impl StiefelManifold {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::{Array2, s};
     use approx::assert_abs_diff_eq;
+    use ndarray::{s, Array2};
 
     #[test]
     fn test_stiefel_projection() {
         let manifold = StiefelManifold::new(4, 2);
-        let x = Array2::from_shape_vec((4, 2), vec![
-            1.0, 0.5,
-            0.0, 1.0,
-            0.5, 0.0,
-            0.0, 0.5,
-        ]).unwrap();
+        let x =
+            Array2::from_shape_vec((4, 2), vec![1.0, 0.5, 0.0, 1.0, 0.5, 0.0, 0.0, 0.5]).unwrap();
 
         let projected = manifold.project(&x).unwrap();
-        
+
         // Check orthonormality: X^T X should be identity
         let xtx = matmul(&transpose(&projected), &projected);
         assert_abs_diff_eq!(xtx[[0, 0]], 1.0, epsilon = 1e-10);
@@ -169,17 +173,13 @@ mod tests {
     fn test_riemannian_gradient() {
         let manifold = StiefelManifold::new(3, 2);
         let x = Array2::eye(3).slice(s![.., 0..2]).to_owned();
-        let grad = Array2::from_shape_vec((3, 2), vec![
-            0.1, 0.2,
-            0.3, 0.4,
-            0.5, 0.6,
-        ]).unwrap();
+        let grad = Array2::from_shape_vec((3, 2), vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6]).unwrap();
 
         let riem_grad = manifold.riemannian_gradient(&x, &grad);
-        
+
         // Riemannian gradient should be orthogonal to the space spanned by X
         let xtg = matmul(&transpose(&x), &riem_grad);
-        
+
         // X^T * riem_grad should be skew-symmetric
         let sym_part = &xtg + &transpose(&xtg);
         assert!(frobenius_norm(&sym_part) < 1e-10);

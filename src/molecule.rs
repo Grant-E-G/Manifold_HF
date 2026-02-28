@@ -49,10 +49,8 @@ impl Molecule {
 
     /// Returns the total number of electrons
     pub fn num_electrons(&self) -> usize {
-        let nuclear_charge: u32 = self.atoms.iter()
-            .map(|a| a.atomic_number)
-            .sum();
-        
+        let nuclear_charge: u32 = self.atoms.iter().map(|a| a.atomic_number).sum();
+
         (nuclear_charge as i32 - self.charge) as usize
     }
 
@@ -76,7 +74,7 @@ impl Molecule {
                 let dz = atom_i.position[2] - atom_j.position[2];
 
                 let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-                
+
                 energy += atom_i.nuclear_charge() * atom_j.nuclear_charge() / distance;
             }
         }
@@ -131,9 +129,9 @@ impl Molecule {
         // Positions in Bohr, approximate geometry
         Self::new(
             vec![
-                Atom::new(8, [0.0, 0.0, 0.0]),           // O
-                Atom::new(1, [0.0, 1.43, 1.11]),         // H
-                Atom::new(1, [0.0, -1.43, 1.11]),        // H
+                Atom::new(8, [0.0, 0.0, 0.0]),    // O
+                Atom::new(1, [0.0, 1.43, 1.11]),  // H
+                Atom::new(1, [0.0, -1.43, 1.11]), // H
             ],
             0,
             1,
@@ -141,7 +139,7 @@ impl Molecule {
     }
 
     /// Creates a heavy water molecule (D2O)
-    /// 
+    ///
     /// Note: Deuterium (D) is an isotope of hydrogen with one neutron.
     /// It has the same atomic number (1) as hydrogen, so electronically
     /// D2O and H2O are identical in the Born-Oppenheimer approximation.
@@ -150,9 +148,9 @@ impl Molecule {
         // Same geometry and atomic numbers as H2O
         Self::new(
             vec![
-                Atom::new(8, [0.0, 0.0, 0.0]),           // O
-                Atom::new(1, [0.0, 1.43, 1.11]),         // D (electronically same as H)
-                Atom::new(1, [0.0, -1.43, 1.11]),        // D (electronically same as H)
+                Atom::new(8, [0.0, 0.0, 0.0]),    // O
+                Atom::new(1, [0.0, 1.43, 1.11]),  // D (electronically same as H)
+                Atom::new(1, [0.0, -1.43, 1.11]), // D (electronically same as H)
             ],
             0,
             1,

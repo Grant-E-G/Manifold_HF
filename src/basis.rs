@@ -3,7 +3,7 @@
 //! This module provides Gaussian basis functions in a functional style.
 
 use crate::basis_data::STO3G_JSON;
-use crate::linalg::{Matrix, matmul, transpose, zeros};
+use crate::linalg::{matmul, transpose, zeros, Matrix};
 use crate::molecule::Molecule;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -20,7 +20,10 @@ pub struct GaussianPrimitive {
 
 impl GaussianPrimitive {
     pub fn new(exponent: f64, coefficient: f64) -> Self {
-        Self { exponent, coefficient }
+        Self {
+            exponent,
+            coefficient,
+        }
     }
 }
 
@@ -99,8 +102,7 @@ struct BseShell {
 /// STO-3G data is sourced from the Basis Set Exchange (see data/sto-3g.SOURCE.txt).
 fn sto3g_data() -> Result<&'static BseBasis, String> {
     static STO3G_CACHE: OnceLock<Result<BseBasis, String>> = OnceLock::new();
-    match STO3G_CACHE.get_or_init(|| serde_json::from_str(STO3G_JSON).map_err(|e| e.to_string()))
-    {
+    match STO3G_CACHE.get_or_init(|| serde_json::from_str(STO3G_JSON).map_err(|e| e.to_string())) {
         Ok(data) => Ok(data),
         Err(err) => Err(err.clone()),
     }
@@ -155,14 +157,14 @@ fn cartesian_to_spherical_matrix(l: u32) -> Result<Matrix, String> {
             mat[[0, 0]] = -inv_sqrt6; // xx
             mat[[0, 3]] = -inv_sqrt6; // yy
             mat[[0, 5]] = 2.0 * inv_sqrt6; // zz
-            // d_{x^2-y^2}
+                                           // d_{x^2-y^2}
             mat[[1, 0]] = inv_sqrt2; // xx
             mat[[1, 3]] = -inv_sqrt2; // yy
-            // d_{xy}
+                                      // d_{xy}
             mat[[2, 1]] = 1.0; // xy
-            // d_{xz}
+                               // d_{xz}
             mat[[3, 2]] = 1.0; // xz
-            // d_{yz}
+                               // d_{yz}
             mat[[4, 4]] = 1.0; // yz
         }
         _ => {
@@ -216,10 +218,9 @@ fn primitive_normalization(alpha: f64, angular: [u32; 3]) -> f64 {
     let lmn = (l + m + n) as f64;
     let prefactor = (2.0 * alpha / std::f64::consts::PI).powf(0.75);
     let ang_factor = (4.0 * alpha).powf(0.5 * lmn);
-    let denom = (double_factorial(2 * l - 1)
-        * double_factorial(2 * m - 1)
-        * double_factorial(2 * n - 1))
-        .sqrt();
+    let denom =
+        (double_factorial(2 * l - 1) * double_factorial(2 * m - 1) * double_factorial(2 * n - 1))
+            .sqrt();
     prefactor * ang_factor / denom
 }
 
@@ -229,9 +230,8 @@ fn primitive_overlap_same_center(alpha: f64, beta: f64, angular: [u32; 3]) -> f6
     let n = angular[2] as i32;
     let gamma = alpha + beta;
     let lsum = l + m + n;
-    let df = double_factorial(2 * l - 1)
-        * double_factorial(2 * m - 1)
-        * double_factorial(2 * n - 1);
+    let df =
+        double_factorial(2 * l - 1) * double_factorial(2 * m - 1) * double_factorial(2 * n - 1);
     let denom = 2.0_f64.powi(lsum) * gamma.powf(lsum as f64 + 1.5);
     std::f64::consts::PI.powf(1.5) * df / denom
 }
@@ -272,15 +272,7 @@ fn build_primitives(
     primitives
 }
 
-fn hermite_coeffs(
-    l1: u32,
-    l2: u32,
-    pa: f64,
-    pb: f64,
-    gamma: f64,
-    mu: f64,
-    ab: f64,
-) -> Vec<f64> {
+fn hermite_coeffs(l1: u32, l2: u32, pa: f64, pb: f64, gamma: f64, mu: f64, ab: f64) -> Vec<f64> {
     let l1 = l1 as usize;
     let l2 = l2 as usize;
     let max_t = l1 + l2;
@@ -316,29 +308,12 @@ fn hermite_coeffs(
     e[l1][l2][0..=max_t].to_vec()
 }
 
-fn overlap_1d(
-    l1: u32,
-    l2: u32,
-    pa: f64,
-    pb: f64,
-    gamma: f64,
-    mu: f64,
-    ab: f64,
-) -> f64 {
+fn overlap_1d(l1: u32, l2: u32, pa: f64, pb: f64, gamma: f64, mu: f64, ab: f64) -> f64 {
     let coeffs = hermite_coeffs(l1, l2, pa, pb, gamma, mu, ab);
     coeffs[0] * (std::f64::consts::PI / gamma).sqrt()
 }
 
-fn kinetic_1d(
-    l1: u32,
-    l2: u32,
-    beta: f64,
-    pa: f64,
-    pb: f64,
-    gamma: f64,
-    mu: f64,
-    ab: f64,
-) -> f64 {
+fn kinetic_1d(l1: u32, l2: u32, beta: f64, pa: f64, pb: f64, gamma: f64, mu: f64, ab: f64) -> f64 {
     let s = overlap_1d(l1, l2, pa, pb, gamma, mu, ab);
     let s_plus2 = overlap_1d(l1, l2 + 2, pa, pb, gamma, mu, ab);
     let s_minus2 = if l2 >= 2 {
@@ -347,18 +322,11 @@ fn kinetic_1d(
         0.0
     };
     let l2f = l2 as f64;
-    -0.5
-        * (l2f * (l2f - 1.0) * s_minus2
-            - 2.0 * beta * (2.0 * l2f + 1.0) * s
-            + 4.0 * beta * beta * s_plus2)
+    -0.5 * (l2f * (l2f - 1.0) * s_minus2 - 2.0 * beta * (2.0 * l2f + 1.0) * s
+        + 4.0 * beta * beta * s_plus2)
 }
 
-fn overlap_primitive(
-    a: &BasisFunction,
-    b: &BasisFunction,
-    alpha: f64,
-    beta: f64,
-) -> f64 {
+fn overlap_primitive(a: &BasisFunction, b: &BasisFunction, alpha: f64, beta: f64) -> f64 {
     let gamma = alpha + beta;
     let mu = alpha * beta / gamma;
     let p = [
@@ -380,12 +348,7 @@ fn overlap_primitive(
     sx * sy * sz
 }
 
-fn kinetic_primitive(
-    a: &BasisFunction,
-    b: &BasisFunction,
-    alpha: f64,
-    beta: f64,
-) -> f64 {
+fn kinetic_primitive(a: &BasisFunction, b: &BasisFunction, alpha: f64, beta: f64) -> f64 {
     let gamma = alpha + beta;
     let mu = alpha * beta / gamma;
     let p = [
@@ -405,9 +368,36 @@ fn kinetic_primitive(
     let sy = overlap_1d(a.angular[1], b.angular[1], pa[1], pb[1], gamma, mu, ab[1]);
     let sz = overlap_1d(a.angular[2], b.angular[2], pa[2], pb[2], gamma, mu, ab[2]);
 
-    let tx = kinetic_1d(a.angular[0], b.angular[0], beta, pa[0], pb[0], gamma, mu, ab[0]);
-    let ty = kinetic_1d(a.angular[1], b.angular[1], beta, pa[1], pb[1], gamma, mu, ab[1]);
-    let tz = kinetic_1d(a.angular[2], b.angular[2], beta, pa[2], pb[2], gamma, mu, ab[2]);
+    let tx = kinetic_1d(
+        a.angular[0],
+        b.angular[0],
+        beta,
+        pa[0],
+        pb[0],
+        gamma,
+        mu,
+        ab[0],
+    );
+    let ty = kinetic_1d(
+        a.angular[1],
+        b.angular[1],
+        beta,
+        pa[1],
+        pb[1],
+        gamma,
+        mu,
+        ab[1],
+    );
+    let tz = kinetic_1d(
+        a.angular[2],
+        b.angular[2],
+        beta,
+        pa[2],
+        pb[2],
+        gamma,
+        mu,
+        ab[2],
+    );
 
     tx * sy * sz + sx * ty * sz + sx * sy * tz
 }
@@ -580,14 +570,42 @@ fn electron_repulsion_primitive(
         (gamma * c.center[2] + delta * d.center[2]) / q,
     ];
 
-    let pa = [p_center[0] - a.center[0], p_center[1] - a.center[1], p_center[2] - a.center[2]];
-    let pb = [p_center[0] - b.center[0], p_center[1] - b.center[1], p_center[2] - b.center[2]];
-    let qc = [q_center[0] - c.center[0], q_center[1] - c.center[1], q_center[2] - c.center[2]];
-    let qd = [q_center[0] - d.center[0], q_center[1] - d.center[1], q_center[2] - d.center[2]];
+    let pa = [
+        p_center[0] - a.center[0],
+        p_center[1] - a.center[1],
+        p_center[2] - a.center[2],
+    ];
+    let pb = [
+        p_center[0] - b.center[0],
+        p_center[1] - b.center[1],
+        p_center[2] - b.center[2],
+    ];
+    let qc = [
+        q_center[0] - c.center[0],
+        q_center[1] - c.center[1],
+        q_center[2] - c.center[2],
+    ];
+    let qd = [
+        q_center[0] - d.center[0],
+        q_center[1] - d.center[1],
+        q_center[2] - d.center[2],
+    ];
 
-    let ab = [a.center[0] - b.center[0], a.center[1] - b.center[1], a.center[2] - b.center[2]];
-    let cd = [c.center[0] - d.center[0], c.center[1] - d.center[1], c.center[2] - d.center[2]];
-    let pq = [p_center[0] - q_center[0], p_center[1] - q_center[1], p_center[2] - q_center[2]];
+    let ab = [
+        a.center[0] - b.center[0],
+        a.center[1] - b.center[1],
+        a.center[2] - b.center[2],
+    ];
+    let cd = [
+        c.center[0] - d.center[0],
+        c.center[1] - d.center[1],
+        c.center[2] - d.center[2],
+    ];
+    let pq = [
+        p_center[0] - q_center[0],
+        p_center[1] - q_center[1],
+        p_center[2] - q_center[2],
+    ];
 
     let ex_ab = hermite_coeffs(a.angular[0], b.angular[0], pa[0], pb[0], p, mu, ab[0]);
     let ey_ab = hermite_coeffs(a.angular[1], b.angular[1], pa[1], pb[1], p, mu, ab[1]);
@@ -644,11 +662,27 @@ impl BasisSet {
         let mut cartesian_functions = Vec::new();
         let mut shells = Vec::new();
 
-        for atom in &molecule.atoms {
+        // Use deterministic atom traversal so basis ordering is invariant to
+        // permutations of equivalent atoms in the input geometry.
+        let mut atom_indices: Vec<usize> = (0..molecule.atoms.len()).collect();
+        atom_indices.sort_by(|&i, &j| {
+            let a = &molecule.atoms[i];
+            let b = &molecule.atoms[j];
+            a.atomic_number
+                .cmp(&b.atomic_number)
+                .then_with(|| a.position[0].total_cmp(&b.position[0]))
+                .then_with(|| a.position[1].total_cmp(&b.position[1]))
+                .then_with(|| a.position[2].total_cmp(&b.position[2]))
+                .then_with(|| i.cmp(&j))
+        });
+
+        for idx_atom in atom_indices {
+            let atom = &molecule.atoms[idx_atom];
             let key = atom.atomic_number.to_string();
-            let element = data.elements.get(&key).ok_or_else(|| {
-                format!("STO-3G data missing element Z={}", atom.atomic_number)
-            })?;
+            let element = data
+                .elements
+                .get(&key)
+                .ok_or_else(|| format!("STO-3G data missing element Z={}", atom.atomic_number))?;
 
             for shell in &element.electron_shells {
                 if shell.angular_momentum.len() != shell.coefficients.len() {
@@ -661,7 +695,10 @@ impl BasisSet {
                 }
 
                 let exponents = parse_f64_list(&shell.exponents).map_err(|err| {
-                    format!("STO-3G exponent parse error for Z={}: {}", atom.atomic_number, err)
+                    format!(
+                        "STO-3G exponent parse error for Z={}: {}",
+                        atom.atomic_number, err
+                    )
                 })?;
 
                 for (idx, &l) in shell.angular_momentum.iter().enumerate() {
@@ -684,7 +721,11 @@ impl BasisSet {
                     let start = cartesian_functions.len();
                     for angular in cartesian_exponents(l) {
                         let primitives = build_primitives(&exponents, &coeffs, angular);
-                        cartesian_functions.push(BasisFunction::new(atom.position, primitives, angular));
+                        cartesian_functions.push(BasisFunction::new(
+                            atom.position,
+                            primitives,
+                            angular,
+                        ));
                     }
                     let n_cart = cartesian_count(l);
                     let n_sph = if l <= 1 { n_cart } else { (2 * l + 1) as usize };
@@ -731,6 +772,10 @@ impl BasisSet {
         matmul(&self.sph_to_cart, coeffs)
     }
 
+    pub fn to_cartesian_density(&self, density: &Matrix) -> Matrix {
+        matmul(&self.sph_to_cart, &matmul(density, &self.cart_to_sph))
+    }
+
     /// Computes overlap matrix S
     pub fn overlap_matrix(&self) -> Matrix {
         let n_cart = self.cartesian_size();
@@ -769,7 +814,11 @@ impl BasisSet {
         for i in 0..n_cart {
             for j in 0..=i {
                 let hij = self.kinetic(&self.cartesian_functions[i], &self.cartesian_functions[j])
-                    + self.nuclear_attraction(&self.cartesian_functions[i], &self.cartesian_functions[j], molecule);
+                    + self.nuclear_attraction(
+                        &self.cartesian_functions[i],
+                        &self.cartesian_functions[j],
+                        molecule,
+                    );
                 h_cart[[i, j]] = hij;
                 h_cart[[j, i]] = hij;
             }
@@ -797,13 +846,8 @@ impl BasisSet {
             let mut term = 0.0;
             for pa in &a.primitives {
                 for pb in &b.primitives {
-                    let value = nuclear_attraction_primitive(
-                        a,
-                        b,
-                        pa.exponent,
-                        pb.exponent,
-                        atom.position,
-                    );
+                    let value =
+                        nuclear_attraction_primitive(a, b, pa.exponent, pb.exponent, atom.position);
                     term += pa.coefficient * pb.coefficient * value;
                 }
             }
@@ -965,7 +1009,7 @@ mod tests {
         let mol = Molecule::h2();
         let basis = BasisSet::minimal(&mol).unwrap();
         let s = basis.overlap_matrix();
-        
+
         // Diagonal elements should be approximately 1 for normalized functions
         assert!(s[[0, 0]] > 0.5);
         assert!(s[[1, 1]] > 0.5);

@@ -57,14 +57,14 @@ fn jacobi_eigenvalue(a: &Matrix) -> Result<(Vector, Matrix), String> {
     let n = a.nrows();
     let mut a_work = a.clone();
     let mut v = identity(n);
-    
+
     let max_iter = 100;
     let tolerance = 1e-10;
 
     for _ in 0..max_iter {
         // Find largest off-diagonal element
         let (p, q, max_val) = find_max_offdiag(&a_work);
-        
+
         if max_val.abs() < tolerance {
             break;
         }
@@ -85,7 +85,7 @@ fn jacobi_eigenvalue(a: &Matrix) -> Result<(Vector, Matrix), String> {
 
     // Extract eigenvalues from diagonal
     let eigenvalues = Vector::from_vec((0..n).map(|i| a_work[[i, i]]).collect());
-    
+
     Ok((eigenvalues, v))
 }
 
@@ -166,7 +166,7 @@ fn gram_schmidt(a: &Matrix) -> Result<Matrix, String> {
 
     for j in 0..k {
         let mut v = a.column(j).to_owned();
-        
+
         // Subtract projections onto previous vectors
         for i in 0..j {
             let qi = q.column(i);
@@ -225,14 +225,10 @@ mod tests {
 
     #[test]
     fn test_gram_schmidt() {
-        let m = Array2::from_shape_vec((3, 2), vec![
-            1.0, 1.0,
-            0.0, 1.0,
-            0.0, 0.0,
-        ]).unwrap();
-        
+        let m = Array2::from_shape_vec((3, 2), vec![1.0, 1.0, 0.0, 1.0, 0.0, 0.0]).unwrap();
+
         let q = gram_schmidt(&m).unwrap();
-        
+
         // Check orthonormality
         let qtq = matmul(&transpose(&q), &q);
         assert_abs_diff_eq!(qtq[[0, 0]], 1.0, epsilon = 1e-10);

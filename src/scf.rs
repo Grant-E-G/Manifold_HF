@@ -3,11 +3,11 @@
 //! This module implements the Hartree-Fock method in a functional style,
 //! with integration for manifold optimization.
 
-use ndarray::s;
-use crate::linalg::{Matrix, Vector, matmul, transpose, eig, trace, identity, frobenius_norm};
-use crate::molecule::Molecule;
 use crate::basis::BasisSet;
+use crate::linalg::{eig, frobenius_norm, identity, matmul, trace, transpose, Matrix, Vector};
 use crate::manifold::StiefelManifold;
+use crate::molecule::Molecule;
+use ndarray::s;
 
 /// Hartree-Fock calculator
 pub struct HartreeFock {
@@ -78,8 +78,10 @@ impl HartreeFock {
             }
 
             if iter % 5 == 0 {
-                println!("Iteration {}: E = {:.10} Hartree, ΔE = {:.2e}", 
-                         iter, new_energy, energy_diff);
+                println!(
+                    "Iteration {}: E = {:.10} Hartree, ΔE = {:.2e}",
+                    iter, new_energy, energy_diff
+                );
             }
 
             c = new_c;
@@ -142,13 +144,8 @@ impl HartreeFock {
         };
 
         // Optimize on manifold
-        let (y_opt, final_energy) = manifold.optimize_cg(
-            &y_initial,
-            grad_fn,
-            energy_fn,
-            max_iter,
-            tol,
-        )?;
+        let (y_opt, final_energy) =
+            manifold.optimize_cg(&y_initial, grad_fn, energy_fn, max_iter, tol)?;
 
         let c_occ_opt = matmul(&s_inv_sqrt, &y_opt);
         let density = self.build_density(&c_occ_opt);
@@ -172,8 +169,7 @@ impl HartreeFock {
     /// Initial guess for MO coefficients
     fn initial_guess(&self) -> Result<Matrix, String> {
         // Use core Hamiltonian for initial guess
-        self.solve_fock(&self.core_hamiltonian)
-            .map(|(c, _)| c)
+        self.solve_fock(&self.core_hamiltonian).map(|(c, _)| c)
     }
 
     /// Builds density matrix from occupied orbitals: P = 2 * C_occ * C_occ^T
@@ -245,7 +241,7 @@ impl HartreeFock {
         let h_plus_f = &self.core_hamiltonian + fock;
         let electronic = 0.5 * trace(&matmul(density, &h_plus_f));
         let nuclear = self.molecule.nuclear_repulsion();
-        
+
         electronic + nuclear
     }
 }
@@ -314,7 +310,7 @@ mod tests {
         let mol = Molecule::h2();
         let hf = HartreeFock::new(mol).unwrap();
         let result = hf.run_scf(100, 1e-6).unwrap();
-        
+
         assert!(result.converged);
         // Energy should be negative (binding)
         assert!(result.energy < 0.0);
@@ -325,7 +321,7 @@ mod tests {
         let mol = Molecule::h2();
         let hf = HartreeFock::new(mol).unwrap();
         let result = hf.run_scf_manifold(100, 1e-6).unwrap();
-        
+
         assert!(result.converged);
         assert!(result.energy < 0.0);
     }
