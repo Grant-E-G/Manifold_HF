@@ -233,6 +233,17 @@ impl Transform {
     }
 }
 
+const METRICS_PANEL_WIDTH_PX: f64 = 310.0;
+const METRICS_PANEL_GUTTER_PX: f64 = 22.0;
+
+fn reserved_right_sidebar_px(options: &DiagramOptions) -> f64 {
+    if options.show_metrics_panel {
+        METRICS_PANEL_WIDTH_PX + METRICS_PANEL_GUTTER_PX
+    } else {
+        0.0
+    }
+}
+
 pub fn render_molecule_svg(
     molecule: &Molecule,
     options: &DiagramOptions,
@@ -340,7 +351,7 @@ fn render_molecule_svg_internal(
             )?;
         }
     }
-    let transform = compute_transform(&bounds, options);
+    let transform = compute_transform(&bounds, options, reserved_right_sidebar_px(options));
     let bonds = detect_bonds(molecule, options.bond_scale);
 
     let mut svg = String::new();
@@ -620,12 +631,17 @@ fn compute_bounds(points: &[Vec2], padding: f64) -> Bounds {
     }
 }
 
-fn compute_transform(bounds: &Bounds, options: &DiagramOptions) -> Transform {
+fn compute_transform(
+    bounds: &Bounds,
+    options: &DiagramOptions,
+    reserved_right_px: f64,
+) -> Transform {
     let width = options.width as f64;
     let height = options.height as f64;
     let range_x = (bounds.max_x - bounds.min_x).max(1.0);
     let range_y = (bounds.max_y - bounds.min_y).max(1.0);
-    let scale_x = (width - 2.0 * options.padding_px) / range_x;
+    let drawable_width = (width - 2.0 * options.padding_px - reserved_right_px).max(120.0);
+    let scale_x = drawable_width / range_x;
     let scale_y = (height - 2.0 * options.padding_px) / range_y;
 
     Transform {
@@ -840,7 +856,7 @@ fn render_metrics_panel(
     let header_h = 28.0;
     let section_gap = if debug_rows.is_empty() { 0.0 } else { 14.0 };
     let debug_title_h = if debug_rows.is_empty() { 0.0 } else { 14.0 };
-    let panel_width = 310.0;
+    let panel_width = METRICS_PANEL_WIDTH_PX;
     let panel_height = header_h
         + padding * 2.0
         + row_h * summary_rows.len() as f64
@@ -1473,6 +1489,7 @@ struct OrbitalField {
     grid: usize,
     dx: f64,
     dy: f64,
+    plane_offset: f64,
 }
 
 struct DensityField {
@@ -1482,6 +1499,56 @@ struct DensityField {
     grid: usize,
     dx: f64,
     dy: f64,
+}
+
+fn compute_orbital_values_at_offset(
+    projection: ProjectionPlane,
+    bounds: &Bounds,
+    basis: &BasisSet,
+    coefficients: &Matrix,
+    orbital_index: usize,
+    grid: usize,
+    plane_offset: f64,
+) -> Result<OrbitalField, String> {
+    let dx = (bounds.max_x - bounds.min_x) / (grid as f64 - 1.0);
+    let dy = (bounds.max_y - bounds.min_y) / (grid as f64 - 1.0);
+    let coeffs_cart = basis.to_cartesian_coefficients(coefficients);
+    let n_cart = basis.cartesian_size();
+
+    let mut values = Vec::with_capacity(grid * grid);
+    let mut max_abs: f64 = 0.0;
+    let mut edge_max_abs: f64 = 0.0;
+
+    for j in 0..grid {
+        for i in 0..grid {
+            let x = bounds.min_x + dx * i as f64;
+            let y = bounds.min_y + dy * j as f64;
+            let point = expand_point(projection, x, y, plane_offset);
+            let mut value = 0.0;
+            for k in 0..n_cart {
+                let coeff = coeffs_cart[[k, orbital_index]];
+                if coeff.abs() < 1e-10 {
+                    continue;
+                }
+                value += coeff * basis.cartesian_functions[k].evaluate(point);
+            }
+            max_abs = max_abs.max(value.abs());
+            if i == 0 || j == 0 || i + 1 == grid || j + 1 == grid {
+                edge_max_abs = edge_max_abs.max(value.abs());
+            }
+            values.push(value);
+        }
+    }
+
+    Ok(OrbitalField {
+        values,
+        max_abs,
+        edge_max_abs,
+        grid,
+        dx,
+        dy,
+        plane_offset,
+    })
 }
 
 fn compute_orbital_values(
@@ -1504,45 +1571,40 @@ fn compute_orbital_values(
     }
 
     let grid = settings.grid.max(10);
-    let dx = (bounds.max_x - bounds.min_x) / (grid as f64 - 1.0);
-    let dy = (bounds.max_y - bounds.min_y) / (grid as f64 - 1.0);
+    let mut field = compute_orbital_values_at_offset(
+        projection,
+        bounds,
+        basis,
+        coefficients,
+        settings.orbital_index,
+        grid,
+        settings.plane_offset,
+    )?;
 
-    let coeffs_cart = basis.to_cartesian_coefficients(coefficients);
-    let n_cart = basis.cartesian_size();
-
-    let mut values = Vec::with_capacity(grid * grid);
-    let mut max_abs: f64 = 0.0;
-    let mut edge_max_abs: f64 = 0.0;
-
-    for j in 0..grid {
-        for i in 0..grid {
-            let x = bounds.min_x + dx * i as f64;
-            let y = bounds.min_y + dy * j as f64;
-            let point = expand_point(projection, x, y, settings.plane_offset);
-            let mut value = 0.0;
-            for k in 0..n_cart {
-                let coeff = coeffs_cart[[k, settings.orbital_index]];
-                if coeff.abs() < 1e-10 {
-                    continue;
-                }
-                value += coeff * basis.cartesian_functions[k].evaluate(point);
+    // Some orbitals are exactly zero on symmetric slice planes (e.g. a nodal
+    // plane through the molecule). Nudge the slice for visualization so the
+    // user still sees the requested MO.
+    if field.max_abs < 1e-12 && settings.plane_offset.abs() < 1e-12 {
+        for offset in [0.12, -0.12, 0.24, -0.24] {
+            let candidate = compute_orbital_values_at_offset(
+                projection,
+                bounds,
+                basis,
+                coefficients,
+                settings.orbital_index,
+                grid,
+                offset,
+            )?;
+            if candidate.max_abs > field.max_abs {
+                field = candidate;
             }
-            max_abs = max_abs.max(value.abs());
-            if i == 0 || j == 0 || i + 1 == grid || j + 1 == grid {
-                edge_max_abs = edge_max_abs.max(value.abs());
+            if field.max_abs >= 1e-12 {
+                break;
             }
-            values.push(value);
         }
     }
 
-    Ok(OrbitalField {
-        values,
-        max_abs,
-        edge_max_abs,
-        grid,
-        dx,
-        dy,
-    })
+    Ok(field)
 }
 
 fn render_orbital_layer_svg(
@@ -1557,10 +1619,14 @@ fn render_orbital_layer_svg(
 ) -> Result<OrbitalRenderInfo, String> {
     let field = compute_orbital_values(projection, bounds, basis, coefficients, settings)?;
     if field.max_abs == 0.0 {
+        let legend_color = match color_mode {
+            OrbitalColorMode::Solid(color) => Some(color.clone()),
+            OrbitalColorMode::Phase => None,
+        };
         return Ok(OrbitalRenderInfo {
             svg: String::new(),
             centroid: None,
-            legend_color: None,
+            legend_color,
             label: format!("MO {}", settings.orbital_index),
         });
     }
@@ -1622,12 +1688,20 @@ fn render_orbital_layer_svg(
         OrbitalColorMode::Solid(color) => Some(color.clone()),
         OrbitalColorMode::Phase => None,
     };
+    let label = if (field.plane_offset - settings.plane_offset).abs() > 1e-9 {
+        format!(
+            "MO {} (offset {:.2})",
+            settings.orbital_index, field.plane_offset
+        )
+    } else {
+        format!("MO {}", settings.orbital_index)
+    };
 
     Ok(OrbitalRenderInfo {
         svg,
         centroid: orbital_centroid(&field, bounds),
         legend_color,
-        label: format!("MO {}", settings.orbital_index),
+        label,
     })
 }
 
@@ -1969,7 +2043,11 @@ mod tests {
         let projected = project_atoms(&mol, ProjectionPlane::YZ);
         let bonds = detect_bonds(&mol, 1.25);
         let options = DiagramOptions::default();
-        let transform = compute_transform(&compute_bounds(&projected, 0.5), &options);
+        let transform = compute_transform(
+            &compute_bounds(&projected, 0.5),
+            &options,
+            reserved_right_sidebar_px(&options),
+        );
         let annotations = angle_annotations(&projected, &bonds, &transform);
         assert!(!annotations.labels.is_empty());
     }

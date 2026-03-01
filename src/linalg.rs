@@ -58,7 +58,7 @@ fn jacobi_eigenvalue(a: &Matrix) -> Result<(Vector, Matrix), String> {
     let mut a_work = a.clone();
     let mut v = identity(n);
 
-    let max_iter = 100;
+    let max_iter = (n * n * 50).max(200);
     let tolerance = 1e-10;
 
     for _ in 0..max_iter {
@@ -69,18 +69,51 @@ fn jacobi_eigenvalue(a: &Matrix) -> Result<(Vector, Matrix), String> {
             break;
         }
 
-        // Compute rotation angle
-        let theta = if (a_work[[p, p]] - a_work[[q, q]]).abs() < 1e-10 {
-            std::f64::consts::PI / 4.0
+        // Numerically stable Jacobi parameters.
+        let app = a_work[[p, p]];
+        let aqq = a_work[[q, q]];
+        let apq = a_work[[p, q]];
+        if apq.abs() < tolerance {
+            continue;
+        }
+
+        let tau = (aqq - app) / (2.0 * apq);
+        let t = if tau >= 0.0 {
+            1.0 / (tau + (1.0 + tau * tau).sqrt())
         } else {
-            0.5 * (2.0 * a_work[[p, q]] / (a_work[[p, p]] - a_work[[q, q]])).atan()
+            -1.0 / (-tau + (1.0 + tau * tau).sqrt())
         };
+        let c = 1.0 / (1.0 + t * t).sqrt();
+        let s = t * c;
+        let tau_rot = s / (1.0 + c);
 
-        let c = theta.cos();
-        let s = theta.sin();
+        // Update matrix entries. This form preserves symmetry and implements
+        // A <- J^T A J without accumulating large cancellation error.
+        a_work[[p, p]] = app - t * apq;
+        a_work[[q, q]] = aqq + t * apq;
+        a_work[[p, q]] = 0.0;
+        a_work[[q, p]] = 0.0;
 
-        // Apply rotation
-        apply_jacobi_rotation(&mut a_work, &mut v, p, q, c, s);
+        for i in 0..n {
+            if i != p && i != q {
+                let aip = a_work[[i, p]];
+                let aiq = a_work[[i, q]];
+                let new_aip = aip - s * (aiq + tau_rot * aip);
+                let new_aiq = aiq + s * (aip - tau_rot * aiq);
+                a_work[[i, p]] = new_aip;
+                a_work[[p, i]] = new_aip;
+                a_work[[i, q]] = new_aiq;
+                a_work[[q, i]] = new_aiq;
+            }
+        }
+
+        // Update eigenvector matrix.
+        for i in 0..n {
+            let vip = v[[i, p]];
+            let viq = v[[i, q]];
+            v[[i, p]] = vip - s * (viq + tau_rot * vip);
+            v[[i, q]] = viq + s * (vip - tau_rot * viq);
+        }
     }
 
     // Extract eigenvalues from diagonal
@@ -108,40 +141,6 @@ fn find_max_offdiag(a: &Matrix) -> (usize, usize, f64) {
     }
 
     (max_p, max_q, max_val)
-}
-
-/// Applies Jacobi rotation to matrix and eigenvector matrix
-fn apply_jacobi_rotation(a: &mut Matrix, v: &mut Matrix, p: usize, q: usize, c: f64, s: f64) {
-    let n = a.nrows();
-
-    // Rotate rows and columns of A
-    for i in 0..n {
-        if i != p && i != q {
-            let aip = a[[i, p]];
-            let aiq = a[[i, q]];
-            a[[i, p]] = c * aip - s * aiq;
-            a[[p, i]] = a[[i, p]];
-            a[[i, q]] = s * aip + c * aiq;
-            a[[q, i]] = a[[i, q]];
-        }
-    }
-
-    let app = a[[p, p]];
-    let aqq = a[[q, q]];
-    let apq = a[[p, q]];
-
-    a[[p, p]] = c * c * app - 2.0 * s * c * apq + s * s * aqq;
-    a[[q, q]] = s * s * app + 2.0 * s * c * apq + c * c * aqq;
-    a[[p, q]] = 0.0;
-    a[[q, p]] = 0.0;
-
-    // Update eigenvectors
-    for i in 0..n {
-        let vip = v[[i, p]];
-        let viq = v[[i, q]];
-        v[[i, p]] = c * vip - s * viq;
-        v[[i, q]] = s * vip + c * viq;
-    }
 }
 
 /// Computes the trace of a matrix

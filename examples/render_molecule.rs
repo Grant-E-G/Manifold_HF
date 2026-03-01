@@ -96,6 +96,8 @@ fn main() {
     };
 
     let mut options = DiagramOptions::default();
+    options.width = 1280;
+    options.height = 840;
     options.projection = ProjectionPlane::YZ;
     options.length_unit = LengthUnit::Angstrom;
     options.annotate_bonds = true;

@@ -208,6 +208,15 @@ def main() -> int:
         default=20.0,
         help="Max allowed ratio local/pyscf to call metrics 'similar'.",
     )
+    parser.add_argument(
+        "--abs-threshold",
+        type=float,
+        default=1e-8,
+        help=(
+            "Absolute threshold (Bohr) for near-zero regime: if both local and "
+            "PySCF metrics are <= this value, treat as similar regardless of ratio."
+        ),
+    )
     args = parser.parse_args()
 
     svg_path = Path(args.svg)
@@ -223,7 +232,9 @@ def main() -> int:
 
     denom = max(abs(pyscf_val), 1e-15)
     ratio = abs(ours) / denom
-    similar = ratio <= args.max_ratio
+    abs_diff = abs(ours - pyscf_val)
+    both_near_zero = abs(ours) <= args.abs_threshold and abs(pyscf_val) <= args.abs_threshold
+    similar = both_near_zero or ratio <= args.max_ratio
 
     report = {
         "local_metric_label": "Orb exch max residual (Bohr)",
@@ -233,6 +244,9 @@ def main() -> int:
         "pyscf_value": pyscf_val,
         "pyscf_worst_pair": f"MO {pyscf_pair[0]} -> MO {pyscf_pair[1]}",
         "pyscf_active_orbitals": pyscf_active,
+        "absolute_difference": abs_diff,
+        "both_near_zero": both_near_zero,
+        "absolute_threshold": args.abs_threshold,
         "ratio_local_over_pyscf": ratio,
         "similar_under_ratio_threshold": similar,
         "ratio_threshold": args.max_ratio,

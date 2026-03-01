@@ -638,7 +638,10 @@ fn electron_repulsion_primitive(
                             if ecd == 0.0 {
                                 continue;
                             }
-                            sum += eab * ecd * r[t + tp][u + up][v + vp][0];
+                            // McMurchie-Davidson ERI contraction requires a parity factor
+                            // on the second (CD) Hermite index set.
+                            let phase = if (tp + up + vp) % 2 == 0 { 1.0 } else { -1.0 };
+                            sum += eab * ecd * phase * r[t + tp][u + up][v + vp][0];
                         }
                     }
                 }
