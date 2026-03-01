@@ -254,6 +254,109 @@ def axis_ranges(points: np.ndarray, padding_frac: float = 0.08):
     return lo - pad, hi + pad
 
 
+def molecular_formula(atoms):
+    counts = {}
+    for atom in atoms:
+        z = int(atom["atomic_number"])
+        sym = ELEMENT_SYMBOLS.get(z, f"Z{z}")
+        counts[sym] = counts.get(sym, 0) + 1
+    # Conventional ordering: C, H, then alphabetical.
+    order = sorted(counts.keys(), key=lambda s: (0 if s == "C" else 1 if s == "H" else 2, s))
+    out = []
+    for sym in order:
+        n = counts[sym]
+        out.append(sym if n == 1 else f"{sym}{n}")
+    return "".join(out)
+
+
+def angle_degrees(a: np.ndarray, b: np.ndarray, c: np.ndarray):
+    v1 = a - b
+    v2 = c - b
+    n1 = np.linalg.norm(v1)
+    n2 = np.linalg.norm(v2)
+    if n1 <= 1e-14 or n2 <= 1e-14:
+        return None
+    cosv = float(np.dot(v1, v2) / (n1 * n2))
+    cosv = max(-1.0, min(1.0, cosv))
+    return float(np.degrees(np.arccos(cosv)))
+
+
+def format_geom_summary(atoms, pairs, unit_scale: float, unit: str):
+    pos = np.stack([a["position"] for a in atoms], axis=0) * unit_scale
+    parts = [f"Formula: {molecular_formula(atoms)}", f"Atoms: {len(atoms)}"]
+    if pairs:
+        bond_vals = []
+        for i, j in pairs:
+            d = float(np.linalg.norm(pos[i] - pos[j]))
+            zi = atoms[i]["atomic_number"]
+            zj = atoms[j]["atomic_number"]
+            si = ELEMENT_SYMBOLS.get(zi, str(zi))
+            sj = ELEMENT_SYMBOLS.get(zj, str(zj))
+            bond_vals.append((d, f"{si}{i}-{sj}{j}: {d:.3f} {unit}"))
+        bond_vals.sort(key=lambda x: x[0])
+        parts.append("Bonds:")
+        parts.extend([f"  {txt}" for _, txt in bond_vals[:4]])
+        if len(bond_vals) > 4:
+            parts.append(f"  ... ({len(bond_vals) - 4} more)")
+    # Report one representative angle around a heavy atom when available.
+    heavy_idx = [i for i, a in enumerate(atoms) if int(a["atomic_number"]) > 1]
+    for c_idx in heavy_idx:
+        neigh = []
+        for i, j in pairs:
+            if i == c_idx:
+                neigh.append(j)
+            elif j == c_idx:
+                neigh.append(i)
+        if len(neigh) >= 2:
+            a_idx, b_idx = neigh[0], neigh[1]
+            ang = angle_degrees(pos[a_idx], pos[c_idx], pos[b_idx])
+            if ang is not None:
+                cs = ELEMENT_SYMBOLS.get(atoms[c_idx]["atomic_number"], str(atoms[c_idx]["atomic_number"]))
+                s1 = ELEMENT_SYMBOLS.get(atoms[a_idx]["atomic_number"], str(atoms[a_idx]["atomic_number"]))
+                s2 = ELEMENT_SYMBOLS.get(atoms[b_idx]["atomic_number"], str(atoms[b_idx]["atomic_number"]))
+                parts.append(
+                    f"Angle {s1}{a_idx}-{cs}{c_idx}-{s2}{b_idx}: {ang:.2f} deg"
+                )
+            break
+    return "<br>".join(parts)
+
+
+def orbital_stats(values, xx, yy, zz, dv: float, iso: float | None):
+    psi2 = values * values
+    norm_box = float(psi2.sum() * dv)
+    peak_abs = float(np.abs(values).max())
+    if norm_box <= 0.0:
+        return {
+            "norm_box": 0.0,
+            "peak_abs": peak_abs,
+            "rms_radius_bohr": None,
+            "iso_pos_frac": None,
+            "iso_neg_frac": None,
+        }
+
+    total_weight = float(psi2.sum())
+    cx = float((xx * psi2).sum() / total_weight)
+    cy = float((yy * psi2).sum() / total_weight)
+    cz = float((zz * psi2).sum() / total_weight)
+    r2 = (xx - cx) ** 2 + (yy - cy) ** 2 + (zz - cz) ** 2
+    rms_radius_bohr = float(np.sqrt((r2 * psi2).sum() / total_weight))
+
+    iso_pos_frac = None
+    iso_neg_frac = None
+    if iso is not None and iso > 0.0:
+        n_tot = values.size
+        iso_pos_frac = float(np.count_nonzero(values >= iso) / n_tot)
+        iso_neg_frac = float(np.count_nonzero(values <= -iso) / n_tot)
+
+    return {
+        "norm_box": norm_box,
+        "peak_abs": peak_abs,
+        "rms_radius_bohr": rms_radius_bohr,
+        "iso_pos_frac": iso_pos_frac,
+        "iso_neg_frac": iso_neg_frac,
+    }
+
+
 def auto_iso(values: np.ndarray, quantile: float, floor: float = 1e-6):
     abs_vals = np.abs(values.ravel())
     q = float(np.quantile(abs_vals, quantile))
@@ -276,6 +379,12 @@ def pick_nearest_index(origin: float, step: float, n: int, value: float):
 def main():
     parser = argparse.ArgumentParser(description="Interactive 3D orbital visualization (Plotly).")
     parser.add_argument(
+        "--profile",
+        choices=["default", "blog"],
+        default="default",
+        help="Preset styling/behavior. 'blog' emphasizes clean, derived presentation.",
+    )
+    parser.add_argument(
         "--cube", action="append", default=[], help="Input cube file (repeatable)."
     )
     parser.add_argument(
@@ -289,6 +398,18 @@ def main():
         help="Glob for cube files (e.g. 'out/h2o_orb*.cube' or 'out/**/*.cube').",
     )
     parser.add_argument("--out", default="orbitals.html", help="Output HTML path.")
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=None,
+        help="Figure width in pixels. If omitted, Plotly auto-sizes.",
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=None,
+        help="Figure height in pixels. If omitted, Plotly auto-sizes.",
+    )
     parser.add_argument(
         "--render",
         choices=["points", "slices", "isosurface"],
@@ -418,7 +539,28 @@ def main():
         action="store_true",
         help="Render text labels next to orbital center-of-mass markers.",
     )
+    parser.add_argument(
+        "--derived-annotation",
+        action="store_true",
+        help="Add an on-figure annotation with derived geometry/orbital stats.",
+    )
     args = parser.parse_args()
+    if args.profile == "blog":
+        # Blog preset: clean, physically interpretable default view.
+        args.render = "isosurface"
+        args.field = "psi"
+        args.normalize = "none"
+        args.point_quantile = 0.998
+        args.point_max_points = 9000
+        args.iso_quantile = 0.999
+        args.iso_min_frac = 0.02
+        args.slice_threshold_frac = 0.03
+        args.label_com = True
+        args.derived_annotation = True
+        if args.width is None:
+            args.width = 1650
+        if args.height is None:
+            args.height = 980
     rng = np.random.default_rng(None if args.point_seed == -1 else args.point_seed)
 
     cube_paths = [Path(p) for p in args.cube]
@@ -449,6 +591,7 @@ def main():
     unit_scale = BOHR_TO_ANGSTROM if args.unit == "angstrom" else 1.0
 
     fig = go.Figure()
+    orbital_reports = []
 
     # If we're rendering distributions (slices), configure a shared color axis.
     coloraxis = None
@@ -634,45 +777,6 @@ def main():
             )
         )
 
-    # Phase/marker legend keys (so the user doesn't have to infer colors from the title).
-    if args.field == "psi":
-        fig.add_trace(
-            go.Scatter3d(
-                x=[None],
-                y=[None],
-                z=[None],
-                mode="markers",
-                name="+ phase (blue hues)",
-                marker=dict(size=8, color="#3b6fb6"),
-                showlegend=True,
-                hoverinfo="skip",
-            )
-        )
-        fig.add_trace(
-            go.Scatter3d(
-                x=[None],
-                y=[None],
-                z=[None],
-                mode="markers",
-                name="- phase (red hues)",
-                marker=dict(size=8, color="#d1495b"),
-                showlegend=True,
-                hoverinfo="skip",
-            )
-        )
-    fig.add_trace(
-        go.Scatter3d(
-            x=[None],
-            y=[None],
-            z=[None],
-            mode="markers",
-            name="Orbital COM (|psi|^2 centroid)",
-            marker=dict(size=8, color="#ffd166", line=dict(color="#111111", width=1)),
-            showlegend=True,
-            hoverinfo="skip",
-        )
-    )
-
     # Scale bar (3D, rotates with the scene).
     if args.scale_bar and args.scale_bar > 0.0:
         bar = float(args.scale_bar)
@@ -737,6 +841,7 @@ def main():
                 coloraxis["cmax"] = 1.0
 
         show_colorbar = True
+        orbital_reports = []
         for cube_idx, cube in enumerate(cubes):
             stem = cube["path"].stem
             orbital_index = cube.get("orbital_index")
@@ -747,11 +852,22 @@ def main():
                 label = f"MO {orbital_index} ({orbital_tag})"
             else:
                 label = f"MO {orbital_index}"
+
             values = cube["values"]
             xx, yy, zz = grid_coordinates(cube)
             com = orbital_center_of_mass(values, xx, yy, zz)
 
+            ax = np.array(cube["ax"], dtype=float)
+            ay = np.array(cube["ay"], dtype=float)
+            az = np.array(cube["az"], dtype=float)
+            dv = abs(float(np.dot(ax, np.cross(ay, az))))
+            stats = orbital_stats(values, xx, yy, zz, dv, None)
+
             group = f"mo{orbital_index}" if orbital_index is not None else stem
+            iso_used = None
+            clipped = False
+            boundary_max = None
+
             if args.render == "isosurface":
                 x_flat = (xx * unit_scale).ravel()
                 y_flat = (yy * unit_scale).ravel()
@@ -784,40 +900,47 @@ def main():
                     iso = boundary_max * 1.05 + 1e-12
                     clipped = False
                 eps = iso * 0.05 + 1e-6
+                iso_used = float(iso)
+                stats = orbital_stats(values, xx, yy, zz, dv, iso_used)
 
                 color_key = orbital_index if orbital_index is not None else cube_idx
                 pos_color = POS_PALETTE[color_key % len(POS_PALETTE)]
                 neg_color = NEG_PALETTE[color_key % len(NEG_PALETTE)]
 
-                # Positive phase.
+                hover_common = (
+                    f"{label}<br>"
+                    f"iso={iso_used:.3g}<br>"
+                    f"peak |psi|={stats['peak_abs']:.3g}<br>"
+                    f"∫|psi|^2 dV≈{stats['norm_box']:.4f}"
+                )
+
                 fig.add_trace(
                     go.Isosurface(
                         x=x_flat,
                         y=y_flat,
                         z=z_flat,
                         value=v_flat,
-                        isomin=iso,
-                        isomax=iso + eps,
+                        isomin=iso_used,
+                        isomax=iso_used + eps,
                         surface_count=1,
                         opacity=0.35,
                         caps=dict(x_show=False, y_show=False, z_show=False),
                         colorscale=[[0.0, pos_color], [1.0, pos_color]],
                         showscale=False,
-                        name=f"{label} (iso={iso:.3g})" + (" [CLIPPED]" if clipped else ""),
+                        name=f"{label} (iso={iso_used:.3g})" + (" [CLIPPED]" if clipped else ""),
                         legendgroup=group,
                         showlegend=True,
+                        hovertemplate=hover_common + "<br>phase=+<extra></extra>",
                     )
                 )
-
-                # Negative phase.
                 fig.add_trace(
                     go.Isosurface(
                         x=x_flat,
                         y=y_flat,
                         z=z_flat,
                         value=v_flat,
-                        isomin=-iso - eps,
-                        isomax=-iso,
+                        isomin=-iso_used - eps,
+                        isomax=-iso_used,
                         surface_count=1,
                         opacity=0.35,
                         caps=dict(x_show=False, y_show=False, z_show=False),
@@ -826,14 +949,12 @@ def main():
                         name=f"{label} (-)",
                         legendgroup=group,
                         showlegend=False,
+                        hovertemplate=hover_common + "<br>phase=-<extra></extra>",
                     )
                 )
             else:
                 # Distribution view: points or slice planes.
                 origin = cube["origin"]
-                ax = np.array(cube["ax"], dtype=float)
-                ay = np.array(cube["ay"], dtype=float)
-                az = np.array(cube["az"], dtype=float)
                 nx, ny, nz = cube["nx"], cube["ny"], cube["nz"]
 
                 field = values
@@ -842,7 +963,6 @@ def main():
                 elif args.field == "density":
                     field = field * field
 
-                # Per-orbital normalization makes shapes comparable even when magnitudes differ wildly.
                 if args.normalize == "orbital":
                     denom = (
                         float(np.max(np.abs(field)))
@@ -871,7 +991,6 @@ def main():
                                 idxs.shape[0], size=args.point_max_points, replace=False
                             )
                             idxs = idxs[sel]
-                        # idxs are (z,y,x) for our values layout.
                         izs = idxs[:, 0].astype(float)
                         iys = idxs[:, 1].astype(float)
                         ixs = idxs[:, 2].astype(float)
@@ -906,11 +1025,6 @@ def main():
                     else:
                         emit_points(field >= thr, f"{label} points", pos_color, True)
                 else:
-                    # Slice planes. These are full planes, so by default we mask low-value pixels
-                    # to avoid rendering giant, nearly-black rectangles.
-                    dx = float(np.linalg.norm(ax))
-                    dy = float(np.linalg.norm(ay))
-                    dz = float(np.linalg.norm(az))
                     xs = origin[0] + np.arange(nx) * ax[0]
                     ys = origin[1] + np.arange(ny) * ay[1]
                     zs = origin[2] + np.arange(nz) * az[2]
@@ -925,13 +1039,20 @@ def main():
                     iy = pick_nearest_index(origin[1], ay[1], ny, float(center[1]))
                     iz = pick_nearest_index(origin[2], az[2], nz, float(center[2]))
 
-                    # Threshold as a fraction of max to hide near-zero pixels.
-                    max_mag = float(np.max(np.abs(field))) if args.field == "psi" else float(np.max(field))
+                    max_mag = (
+                        float(np.max(np.abs(field)))
+                        if args.field == "psi"
+                        else float(np.max(field))
+                    )
                     thr = float(args.slice_threshold_frac) * max_mag
                     if not math.isfinite(thr) or thr < 0.0:
                         thr = 0.0
 
-                    axes = set(ch.lower() for ch in args.slice_axes if ch.lower() in ("x", "y", "z"))
+                    axes = set(
+                        ch.lower()
+                        for ch in args.slice_axes
+                        if ch.lower() in ("x", "y", "z")
+                    )
                     show_legend = True
 
                     def mask_surface(xg, yg, zg, colors):
@@ -951,7 +1072,6 @@ def main():
                         colors[~keep] = np.nan
                         return xg, yg, zg, colors
 
-                    # x-slice (YZ plane).
                     if "x" in axes:
                         x0 = float(xs[ix] * unit_scale)
                         y_grid = (ys * unit_scale)[None, :].repeat(nz, axis=0)
@@ -974,7 +1094,7 @@ def main():
                                 legendgroup=group,
                                 showlegend=show_legend,
                                 hovertemplate=(
-                                    f"MO {orbital_index} x-slice<br>"
+                                    f"{label} x-slice<br>"
                                     f"x={x0:.3f} {args.unit}<br>"
                                     f"y=%{{y:.3f}} {args.unit}<br>"
                                     f"z=%{{z:.3f}} {args.unit}<br>"
@@ -985,7 +1105,6 @@ def main():
                         show_colorbar = False
                         show_legend = False
 
-                    # y-slice (XZ plane).
                     if "y" in axes:
                         y0 = float(ys[iy] * unit_scale)
                         x_grid = (xs * unit_scale)[None, :].repeat(nz, axis=0)
@@ -1008,7 +1127,7 @@ def main():
                                 legendgroup=group,
                                 showlegend=show_legend,
                                 hovertemplate=(
-                                    f"MO {orbital_index} y-slice<br>"
+                                    f"{label} y-slice<br>"
                                     f"y={y0:.3f} {args.unit}<br>"
                                     f"x=%{{x:.3f}} {args.unit}<br>"
                                     f"z=%{{z:.3f}} {args.unit}<br>"
@@ -1019,7 +1138,6 @@ def main():
                         show_colorbar = False
                         show_legend = False
 
-                    # z-slice (XY plane).
                     if "z" in axes:
                         z0 = float(zs[iz] * unit_scale)
                         x_grid = (xs * unit_scale)[None, :].repeat(ny, axis=0)
@@ -1042,7 +1160,7 @@ def main():
                                 legendgroup=group,
                                 showlegend=show_legend,
                                 hovertemplate=(
-                                    f"MO {orbital_index} z-slice<br>"
+                                    f"{label} z-slice<br>"
                                     f"z={z0:.3f} {args.unit}<br>"
                                     f"x=%{{x:.3f}} {args.unit}<br>"
                                     f"y=%{{y:.3f}} {args.unit}<br>"
@@ -1053,7 +1171,6 @@ def main():
                         show_colorbar = False
                         show_legend = False
 
-            # Orbital center-of-mass marker.
             if com is not None:
                 com_mode = "markers+text" if args.label_com else "markers"
                 com_text = [f"MO {orbital_index} COM"] if args.label_com else None
@@ -1064,33 +1181,117 @@ def main():
                         z=[com[2] * unit_scale],
                         mode=com_mode,
                         text=com_text,
-                        name=f"{stem} COM",
+                        name=f"{label} COM",
                         legendgroup=group,
                         showlegend=False,
                         marker=dict(
                             size=6, color="#ffd166", line=dict(color="#111111", width=1)
                         ),
                         hovertemplate=(
-                            "COM<br>"
+                            f"{label} COM<br>"
                             f"x=%{{x:.3f}} {args.unit}<br>"
                             f"y=%{{y:.3f}} {args.unit}<br>"
-                            f"z=%{{z:.3f}} {args.unit}<extra></extra>"
+                            f"z=%{{z:.3f}} {args.unit}<br>"
+                            f"∫|psi|^2 dV≈{stats['norm_box']:.4f}<extra></extra>"
                         ),
+                    )
                 )
+
+            orbital_reports.append(
+                {
+                    "label": label,
+                    "orbital_index": orbital_index,
+                    "orbital_tag": orbital_tag,
+                    "iso": iso_used,
+                    "clipped": clipped,
+                    "boundary_max": boundary_max,
+                    "stats": stats,
+                }
             )
 
-    subtitle = (
-        f"Loaded {len(cubes)} cube(s). "
-        f"Render={args.render}, field={args.field}, normalize={args.normalize}. "
+    formula = molecular_formula(pred_atoms)
+    source_labels = sorted(
+        {
+            cube.get("comment1", "").strip()
+            for cube in cubes
+            if cube.get("comment1", "").strip()
+        }
     )
-    if args.render == "points":
-        subtitle += f"Points keep top q={args.point_quantile:g} (max {args.point_max_points} pts). "
-    elif args.render == "slices":
-        subtitle += f"Slices mask below {args.slice_threshold_frac:g} of max. "
-    subtitle += "Click MO legend items to toggle orbitals (view stays fixed)."
+    if len(source_labels) == 1:
+        source_line = source_labels[0]
+    elif len(source_labels) > 1:
+        source_line = f"{len(source_labels)} cube sources"
+    else:
+        source_line = "Cube data"
+    grid_labels = sorted({f"{c['nx']}x{c['ny']}x{c['nz']}" for c in cubes})
+    grid_line = ", ".join(grid_labels[:2])
+    if len(grid_labels) > 2:
+        grid_line += f" (+{len(grid_labels) - 2} more)"
+    if args.profile == "blog":
+        title = f"{formula} Molecular Orbitals"
+        subtitle = (
+            f"{source_line} | {len(cubes)} orbital cube(s), grid {grid_line}, "
+            f"render={args.render}"
+        )
+    else:
+        title = "Molecule + Molecular Orbitals"
+        subtitle = (
+            f"Loaded {len(cubes)} cube(s). "
+            f"Render={args.render}, field={args.field}, normalize={args.normalize}. "
+        )
+        if args.render == "points":
+            subtitle += (
+                f"Points keep top q={args.point_quantile:g} "
+                f"(max {args.point_max_points} pts). "
+            )
+        elif args.render == "slices":
+            subtitle += f"Slices mask below {args.slice_threshold_frac:g} of max. "
+        subtitle += "Click MO legend items to toggle orbitals (view stays fixed)."
 
-    fig.update_layout(
-        title=f"Molecule + Molecular Orbitals<br><sup>{subtitle}</sup>",
+    annotation_text = None
+    if args.derived_annotation:
+        lines = [format_geom_summary(pred_atoms, pairs, unit_scale, args.unit)]
+        if orbital_reports:
+            lines.append("Orbital stats:")
+            max_rows = 6
+            for rep in orbital_reports[:max_rows]:
+                stats = rep["stats"]
+                rms = stats["rms_radius_bohr"]
+                rms_txt = (
+                    f"{(rms * unit_scale):.3f} {args.unit}"
+                    if rms is not None
+                    else "n/a"
+                )
+                if rep["iso"] is None:
+                    row = (
+                        f"  {rep['label']}: "
+                        f"∫|psi|²dV≈{stats['norm_box']:.4f}, "
+                        f"rms={rms_txt}"
+                    )
+                else:
+                    posf = stats["iso_pos_frac"]
+                    negf = stats["iso_neg_frac"]
+                    pos_txt = f"{(100.0 * posf):.2f}%" if posf is not None else "n/a"
+                    neg_txt = f"{(100.0 * negf):.2f}%" if negf is not None else "n/a"
+                    clip_txt = "clipped" if rep["clipped"] else "not clipped"
+                    row = (
+                        f"  {rep['label']}: iso={rep['iso']:.3g}, "
+                        f"∫|psi|²dV≈{stats['norm_box']:.4f}, "
+                        f"rms={rms_txt}, f+={pos_txt}, f-={neg_txt}, {clip_txt}"
+                    )
+                lines.append(row)
+            if len(orbital_reports) > max_rows:
+                lines.append(f"  ... ({len(orbital_reports) - max_rows} more orbitals)")
+        annotation_text = "<br>".join(lines)
+
+    right_margin = 120
+    if args.render == "slices":
+        right_margin = max(right_margin, 150)
+    if annotation_text is not None:
+        right_margin = max(right_margin, 410)
+
+    layout_kwargs = dict(
+        title=f"{title}<br><sup>{subtitle}</sup>",
         legend=dict(
             title_text="Legend",
             groupclick="togglegroup",
@@ -1113,10 +1314,38 @@ def main():
             aspectmode="manual",
             aspectratio=dict(x=float(aspect[0]), y=float(aspect[1]), z=float(aspect[2])),
         ),
-        margin=dict(l=0, r=120, t=40, b=0),
+        margin=dict(l=0, r=right_margin, t=40, b=0),
     )
+    if args.width is not None:
+        layout_kwargs["width"] = int(args.width)
+    if args.height is not None:
+        layout_kwargs["height"] = int(args.height)
+    fig.update_layout(**layout_kwargs)
+    if args.profile == "blog":
+        fig.update_layout(
+            scene_camera=dict(
+                eye=dict(x=1.35, y=1.45, z=0.95),
+                up=dict(x=0.0, y=0.0, z=1.0),
+            )
+        )
     if coloraxis is not None and args.render == "slices":
         fig.update_layout(coloraxis=coloraxis)
+    if annotation_text is not None:
+        fig.add_annotation(
+            xref="paper",
+            yref="paper",
+            x=1.01,
+            y=0.02,
+            xanchor="left",
+            yanchor="bottom",
+            text=annotation_text,
+            showarrow=False,
+            align="left",
+            font=dict(size=11, color="#0f172a"),
+            bgcolor="rgba(255,255,255,0.93)",
+            bordercolor="rgba(148,163,184,0.85)",
+            borderwidth=1,
+        )
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
