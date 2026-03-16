@@ -4,10 +4,11 @@
 //! with integration for manifold optimization.
 
 use crate::basis::BasisSet;
-use crate::linalg::{eig, frobenius_norm, identity, matmul, trace, transpose, Matrix, Vector};
-use crate::manifold::StiefelManifold;
+use crate::linalg::{eig, frobenius_norm, matmul, trace, transpose, Matrix, Vector};
+use crate::manifold::{ManifoldOptimizationOptions, StiefelManifold};
 use crate::molecule::Molecule;
 use ndarray::s;
+use ndarray::Array1;
 
 /// Hartree-Fock calculator
 pub struct HartreeFock {
@@ -49,8 +50,9 @@ impl HartreeFock {
 
         // Initial guess: use core Hamiltonian
         let mut c = self.initial_guess()?;
-        let mut energy = 0.0;
         let mut converged = false;
+        let mut iterations = 0usize;
+        let mut previous_energy: Option<f64> = None;
 
         for iter in 0..max_iter {
             // Build density matrix: P = C_occ * C_occ^T
@@ -67,12 +69,16 @@ impl HartreeFock {
             let new_energy = self.compute_energy(&density, &fock);
 
             // Check convergence
-            let energy_diff = (new_energy - energy).abs();
+            let energy_diff = previous_energy
+                .map(|energy| (new_energy - energy).abs())
+                .unwrap_or(f64::INFINITY);
             let c_diff = frobenius_norm(&(&new_c - &c));
+            iterations = iter + 1;
 
             if iter > 0 && energy_diff < tol && c_diff < tol {
                 converged = true;
-                println!("SCF converged in {} iterations", iter);
+                c = new_c;
+                println!("SCF converged in {} iterations", iterations);
                 println!("Final energy: {:.10} Hartree", new_energy);
                 break;
             }
@@ -85,7 +91,7 @@ impl HartreeFock {
             }
 
             c = new_c;
-            energy = new_energy;
+            previous_energy = Some(new_energy);
         }
 
         if !converged {
@@ -94,12 +100,14 @@ impl HartreeFock {
 
         let c_occ = c.slice(s![.., 0..n_occ]).to_owned();
         let density = self.build_density(&c_occ);
+        let energy = self.total_energy_from_density(&density);
 
         Ok(SCFResult {
             energy,
             coefficients: c,
             density,
             converged,
+            iterations,
         })
     }
 
@@ -108,6 +116,15 @@ impl HartreeFock {
     /// Instead of diagonalizing Fock matrix, optimizes orbitals directly
     /// on the Stiefel manifold
     pub fn run_scf_manifold(&self, max_iter: usize, tol: f64) -> Result<SCFResult, String> {
+        self.run_scf_manifold_with_options(max_iter, tol, &ManifoldOptimizationOptions::default())
+    }
+
+    pub fn run_scf_manifold_with_options(
+        &self,
+        max_iter: usize,
+        tol: f64,
+        options: &ManifoldOptimizationOptions,
+    ) -> Result<SCFResult, String> {
         let n_basis = self.basis.size();
         let n_occ = self.molecule.num_occupied();
 
@@ -144,25 +161,26 @@ impl HartreeFock {
         };
 
         // Optimize on manifold
-        let (y_opt, final_energy) =
-            manifold.optimize_cg(&y_initial, grad_fn, energy_fn, max_iter, tol)?;
+        let optimization = manifold
+            .optimize_cg_with_options(&y_initial, grad_fn, energy_fn, max_iter, tol, options)?;
+        let y_opt = optimization.point;
 
         let c_occ_opt = matmul(&s_inv_sqrt, &y_opt);
         let density = self.build_density(&c_occ_opt);
+        let energy = self.total_energy_from_density(&density);
 
-        // Extend to full coefficient matrix (for compatibility)
-        let mut c_full = identity(n_basis);
-        for i in 0..n_basis {
-            for j in 0..n_occ {
-                c_full[[i, j]] = c_occ_opt[[i, j]];
-            }
-        }
+        // Complete the optimized occupied orbitals with an S-orthonormal virtual subspace.
+        let y_full = complete_orthonormal_basis(&y_opt)?;
+        debug_assert_eq!(y_full.nrows(), n_basis);
+        debug_assert_eq!(y_full.ncols(), n_basis);
+        let c_full = matmul(&s_inv_sqrt, &y_full);
 
         Ok(SCFResult {
-            energy: final_energy,
+            energy,
             coefficients: c_full,
             density,
-            converged: true,
+            converged: optimization.converged,
+            iterations: optimization.iterations,
         })
     }
 
@@ -181,6 +199,12 @@ impl HartreeFock {
     fn build_fock(&self, density: &Matrix) -> Matrix {
         let g = self.build_g_matrix(density);
         &self.core_hamiltonian + &g
+    }
+
+    /// Computes total energy from a density matrix.
+    pub fn total_energy_from_density(&self, density: &Matrix) -> f64 {
+        let fock = self.build_fock(density);
+        self.compute_energy(density, &fock)
     }
 
     /// Builds two-electron part of Fock matrix (simplified)
@@ -299,11 +323,62 @@ pub struct SCFResult {
     pub density: Matrix,
     /// Whether SCF converged
     pub converged: bool,
+    /// Number of optimization / SCF iterations performed
+    pub iterations: usize,
+}
+
+fn complete_orthonormal_basis(occupied: &Matrix) -> Result<Matrix, String> {
+    let n = occupied.nrows();
+    let k = occupied.ncols();
+    if k > n {
+        return Err("occupied orbital block has more columns than rows".to_string());
+    }
+
+    let mut full = Matrix::zeros((n, n));
+    for i in 0..n {
+        for j in 0..k {
+            full[[i, j]] = occupied[[i, j]];
+        }
+    }
+
+    let mut next_col = k;
+    for seed in 0..n {
+        if next_col == n {
+            break;
+        }
+
+        let mut candidate = Array1::zeros(n);
+        candidate[seed] = 1.0;
+
+        for j in 0..next_col {
+            let basis_vec = full.column(j).to_owned();
+            let projection = candidate.dot(&basis_vec);
+            candidate = &candidate - &(basis_vec * projection);
+        }
+
+        let norm = candidate.dot(&candidate).sqrt();
+        if norm <= 1e-10 {
+            continue;
+        }
+
+        let normalized = candidate / norm;
+        for i in 0..n {
+            full[[i, next_col]] = normalized[i];
+        }
+        next_col += 1;
+    }
+
+    if next_col != n {
+        return Err("failed to complete orbital basis from occupied subspace".to_string());
+    }
+
+    Ok(full)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn test_hf_h2_scf() {
@@ -314,6 +389,7 @@ mod tests {
         assert!(result.converged);
         // Energy should be negative (binding)
         assert!(result.energy < 0.0);
+        assert!(result.iterations > 0);
     }
 
     #[test]
@@ -324,5 +400,31 @@ mod tests {
 
         assert!(result.converged);
         assert!(result.energy < 0.0);
+    }
+
+    #[test]
+    fn test_hf_h2_scf_energy_matches_returned_density() {
+        let mol = Molecule::h2();
+        let hf = HartreeFock::new(mol).unwrap();
+        let result = hf.run_scf(100, 1e-6).unwrap();
+        let recomputed_energy = hf.total_energy_from_density(&result.density);
+
+        assert_abs_diff_eq!(result.energy, recomputed_energy, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_hf_h2_manifold_coefficients_are_s_orthonormal() {
+        let mol = Molecule::h2();
+        let hf = HartreeFock::new(mol).unwrap();
+        let result = hf.run_scf_manifold(100, 1e-6).unwrap();
+        let cts = matmul(&transpose(&result.coefficients), &hf.overlap);
+        let ctsc = matmul(&cts, &result.coefficients);
+
+        for i in 0..ctsc.nrows() {
+            for j in 0..ctsc.ncols() {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert_abs_diff_eq!(ctsc[[i, j]], expected, epsilon = 1e-8);
+            }
+        }
     }
 }

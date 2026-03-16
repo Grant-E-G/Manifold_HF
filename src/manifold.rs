@@ -1,12 +1,89 @@
-//! Manifold optimization on the Stiefel manifold
+//! Manifold optimization on the Stiefel manifold.
 //!
 //! This module implements optimization on the Stiefel manifold,
-//! which is the set of n×p matrices with orthonormal columns.
+//! which is the set of n x p matrices with orthonormal columns.
 //! This is crucial for maintaining orthonormality of molecular orbitals.
 
 use crate::linalg::{frobenius_norm, matmul, project_stiefel, transpose, Matrix};
 
-/// Represents the Stiefel manifold St(n, p) = {X ∈ ℝ^{n×p} : X^T X = I_p}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConjugateGradientVariant {
+    FletcherReeves,
+    PolakRibierePlus,
+}
+
+#[derive(Debug, Clone)]
+pub struct FixedStepLineSearch {
+    pub step_size: f64,
+}
+
+impl Default for FixedStepLineSearch {
+    fn default() -> Self {
+        Self { step_size: 1e-2 }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BacktrackingArmijoLineSearch {
+    pub initial_step_size: f64,
+    pub contraction_factor: f64,
+    pub sufficient_decrease: f64,
+    pub min_step_size: f64,
+    pub max_backtracks: usize,
+}
+
+impl Default for BacktrackingArmijoLineSearch {
+    fn default() -> Self {
+        Self {
+            initial_step_size: 1.0,
+            contraction_factor: 0.5,
+            sufficient_decrease: 1e-4,
+            min_step_size: 1e-8,
+            max_backtracks: 24,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum LineSearchMethod {
+    FixedStep(FixedStepLineSearch),
+    BacktrackingArmijo(BacktrackingArmijoLineSearch),
+}
+
+impl Default for LineSearchMethod {
+    fn default() -> Self {
+        Self::BacktrackingArmijo(BacktrackingArmijoLineSearch::default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ManifoldOptimizationOptions {
+    pub line_search: LineSearchMethod,
+    pub cg_variant: ConjugateGradientVariant,
+    pub log_interval: Option<usize>,
+}
+
+impl Default for ManifoldOptimizationOptions {
+    fn default() -> Self {
+        Self {
+            line_search: LineSearchMethod::default(),
+            cg_variant: ConjugateGradientVariant::PolakRibierePlus,
+            log_interval: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ManifoldOptimizationResult {
+    pub point: Matrix,
+    pub energy: f64,
+    pub converged: bool,
+    pub iterations: usize,
+    pub gradient_norm: f64,
+    pub last_step_size: f64,
+}
+
+/// Represents the Stiefel manifold St(n, p) = {X in R^(n x p) : X^T X = I_p}
 pub struct StiefelManifold {
     /// Dimension n (ambient space)
     pub n: usize,
@@ -21,44 +98,42 @@ impl StiefelManifold {
         Self { n, p }
     }
 
-    /// Projects a matrix onto the Stiefel manifold
+    /// Projects a matrix onto the Stiefel manifold.
     ///
-    /// Uses QR decomposition to ensure orthonormal columns
+    /// Uses Gram-Schmidt to ensure orthonormal columns.
     pub fn project(&self, x: &Matrix) -> Result<Matrix, String> {
         project_stiefel(x)
     }
 
-    /// Computes Riemannian gradient on the Stiefel manifold
-    ///
-    /// Given Euclidean gradient G and point X on manifold,
-    /// computes the Riemannian gradient: G - X(X^T G)
-    pub fn riemannian_gradient(&self, x: &Matrix, euclidean_grad: &Matrix) -> Matrix {
+    /// Projects an ambient matrix onto the tangent space at `x`.
+    pub fn project_tangent(&self, x: &Matrix, ambient: &Matrix) -> Matrix {
         let xt = transpose(x);
-        let xtg = matmul(&xt, euclidean_grad);
-        let sym = &xtg + &transpose(&xtg);
+        let xt_ambient = matmul(&xt, ambient);
+        let sym = &xt_ambient + &transpose(&xt_ambient);
         let correction = matmul(x, &(&sym * 0.5));
-        euclidean_grad - &correction
+        ambient - &correction
     }
 
-    /// Performs a retraction onto the manifold
+    /// Computes the Riemannian gradient on the Stiefel manifold.
+    pub fn riemannian_gradient(&self, x: &Matrix, euclidean_grad: &Matrix) -> Matrix {
+        self.project_tangent(x, euclidean_grad)
+    }
+
+    /// Performs a retraction onto the manifold.
     ///
-    /// Given point X and tangent vector V, retracts to manifold:
-    /// R_X(tV) = qf(X + tV)
+    /// Given point X and tangent vector V, retracts to the manifold via
+    /// `R_X(tV) = qf(X + tV)`.
     pub fn retract(&self, x: &Matrix, tangent: &Matrix, step_size: f64) -> Result<Matrix, String> {
         let update = x + &(tangent * step_size);
         self.project(&update)
     }
 
-    /// Performs gradient descent on the Stiefel manifold
-    ///
-    /// # Arguments
-    /// * `initial` - Initial point on manifold
-    /// * `grad_fn` - Function computing Euclidean gradient at a point
-    /// * `max_iter` - Maximum iterations
-    /// * `tol` - Convergence tolerance
-    ///
-    /// # Returns
-    /// Optimized point on the manifold
+    /// Uses tangent-space projection as a simple vector transport.
+    pub fn transport(&self, x_next: &Matrix, tangent: &Matrix) -> Matrix {
+        self.project_tangent(x_next, tangent)
+    }
+
+    /// Performs gradient descent on the Stiefel manifold with a fixed step.
     pub fn optimize<F>(
         &self,
         initial: &Matrix,
@@ -70,39 +145,21 @@ impl StiefelManifold {
         F: Fn(&Matrix) -> Matrix,
     {
         let mut x = self.project(initial)?;
-        let step_size = 0.01;
+        let step_size = FixedStepLineSearch::default().step_size;
 
-        for iter in 0..max_iter {
-            // Compute Euclidean gradient
+        for _ in 0..max_iter {
             let euc_grad = grad_fn(&x);
-
-            // Convert to Riemannian gradient
             let riem_grad = self.riemannian_gradient(&x, &euc_grad);
-
-            // Check convergence
-            let grad_norm = frobenius_norm(&riem_grad);
-            if grad_norm < tol {
-                println!(
-                    "Converged at iteration {} with gradient norm {:.2e}",
-                    iter, grad_norm
-                );
+            if frobenius_norm(&riem_grad) < tol {
                 break;
             }
-
-            // Retract onto manifold
             x = self.retract(&x, &(-&riem_grad), step_size)?;
-
-            if iter % 10 == 0 {
-                println!("Iteration {}: gradient norm = {:.2e}", iter, grad_norm);
-            }
         }
 
         Ok(x)
     }
 
-    /// Conjugate gradient optimization on Stiefel manifold
-    ///
-    /// More efficient than steepest descent
+    /// Conjugate-gradient optimization on the Stiefel manifold using default options.
     pub fn optimize_cg<F, E>(
         &self,
         initial: &Matrix,
@@ -110,49 +167,209 @@ impl StiefelManifold {
         energy_fn: E,
         max_iter: usize,
         tol: f64,
-    ) -> Result<(Matrix, f64), String>
+    ) -> Result<ManifoldOptimizationResult, String>
+    where
+        F: Fn(&Matrix) -> Matrix,
+        E: Fn(&Matrix) -> f64,
+    {
+        self.optimize_cg_with_options(
+            initial,
+            grad_fn,
+            energy_fn,
+            max_iter,
+            tol,
+            &ManifoldOptimizationOptions::default(),
+        )
+    }
+
+    /// Conjugate-gradient optimization on the Stiefel manifold with explicit options.
+    pub fn optimize_cg_with_options<F, E>(
+        &self,
+        initial: &Matrix,
+        grad_fn: F,
+        energy_fn: E,
+        max_iter: usize,
+        tol: f64,
+        options: &ManifoldOptimizationOptions,
+    ) -> Result<ManifoldOptimizationResult, String>
     where
         F: Fn(&Matrix) -> Matrix,
         E: Fn(&Matrix) -> f64,
     {
         let mut x = self.project(initial)?;
         let mut energy = energy_fn(&x);
-        let step_size = 0.01;
+        if !energy.is_finite() {
+            return Err("initial manifold energy is not finite".to_string());
+        }
+
+        let euc_grad = grad_fn(&x);
+        let mut riem_grad = self.riemannian_gradient(&x, &euc_grad);
+        let mut grad_norm = frobenius_norm(&riem_grad);
+        let mut direction = -&riem_grad;
+        let mut iterations = 0usize;
+        let mut last_step_size = 0.0;
 
         for iter in 0..max_iter {
-            let euc_grad = grad_fn(&x);
-            let riem_grad = self.riemannian_gradient(&x, &euc_grad);
-
-            let grad_norm = frobenius_norm(&riem_grad);
             if grad_norm < tol {
-                println!(
-                    "CG converged at iteration {} with gradient norm {:.2e}",
-                    iter, grad_norm
-                );
                 break;
             }
 
-            // Simple line search
-            x = self.retract(&x, &(-&riem_grad), step_size)?;
-            energy = energy_fn(&x);
+            if frobenius_inner(&riem_grad, &direction) >= 0.0 {
+                direction = -&riem_grad;
+            }
 
-            if iter % 10 == 0 {
-                println!(
-                    "Iteration {}: energy = {:.6}, gradient norm = {:.2e}",
-                    iter, energy, grad_norm
-                );
+            let (x_next, energy_next, step_size) = self.line_search(
+                &x,
+                energy,
+                &riem_grad,
+                &direction,
+                &energy_fn,
+                &options.line_search,
+            )?;
+
+            let next_euc_grad = grad_fn(&x_next);
+            let next_riem_grad = self.riemannian_gradient(&x_next, &next_euc_grad);
+            let next_grad_norm = frobenius_norm(&next_riem_grad);
+
+            let transported_grad = self.transport(&x_next, &riem_grad);
+            let transported_direction = self.transport(&x_next, &direction);
+            let beta = cg_beta(
+                options.cg_variant,
+                &next_riem_grad,
+                &transported_grad,
+                &riem_grad,
+            );
+            let mut next_direction = -&next_riem_grad + &(transported_direction * beta);
+            if frobenius_inner(&next_riem_grad, &next_direction) >= 0.0 {
+                next_direction = -&next_riem_grad;
+            }
+
+            x = x_next;
+            energy = energy_next;
+            riem_grad = next_riem_grad;
+            grad_norm = next_grad_norm;
+            direction = next_direction;
+            iterations = iter + 1;
+            last_step_size = step_size;
+
+            if let Some(interval) = options.log_interval {
+                if interval > 0 && iter % interval == 0 {
+                    println!(
+                        "Iteration {}: energy = {:.10}, gradient norm = {:.2e}, step = {:.2e}",
+                        iter, energy, grad_norm, last_step_size
+                    );
+                }
             }
         }
 
-        Ok((x, energy))
+        Ok(ManifoldOptimizationResult {
+            point: x,
+            energy,
+            converged: grad_norm < tol,
+            iterations,
+            gradient_norm: grad_norm,
+            last_step_size,
+        })
+    }
+
+    fn line_search<E>(
+        &self,
+        x: &Matrix,
+        energy: f64,
+        riem_grad: &Matrix,
+        direction: &Matrix,
+        energy_fn: &E,
+        method: &LineSearchMethod,
+    ) -> Result<(Matrix, f64, f64), String>
+    where
+        E: Fn(&Matrix) -> f64,
+    {
+        match method {
+            LineSearchMethod::FixedStep(config) => {
+                let candidate = self.retract(x, direction, config.step_size)?;
+                let candidate_energy = energy_fn(&candidate);
+                if !candidate_energy.is_finite() {
+                    return Err("fixed-step line search produced non-finite energy".to_string());
+                }
+                Ok((candidate, candidate_energy, config.step_size))
+            }
+            LineSearchMethod::BacktrackingArmijo(config) => {
+                let directional_derivative = frobenius_inner(riem_grad, direction);
+                let mut step_size = config.initial_step_size;
+                let mut best_trial: Option<(Matrix, f64, f64)> = None;
+
+                for _ in 0..config.max_backtracks {
+                    let candidate = self.retract(x, direction, step_size)?;
+                    let candidate_energy = energy_fn(&candidate);
+                    if candidate_energy.is_finite() {
+                        if best_trial
+                            .as_ref()
+                            .map(|(_, best_energy, _)| candidate_energy < *best_energy)
+                            .unwrap_or(true)
+                        {
+                            best_trial = Some((candidate.clone(), candidate_energy, step_size));
+                        }
+
+                        if candidate_energy
+                            <= energy
+                                + config.sufficient_decrease * step_size * directional_derivative
+                        {
+                            return Ok((candidate, candidate_energy, step_size));
+                        }
+                    }
+
+                    step_size *= config.contraction_factor;
+                    if step_size < config.min_step_size {
+                        break;
+                    }
+                }
+
+                match best_trial {
+                    Some((candidate, candidate_energy, step_size))
+                        if candidate_energy <= energy =>
+                    {
+                        Ok((candidate, candidate_energy, step_size))
+                    }
+                    _ => Err("backtracking line search failed to reduce the energy".to_string()),
+                }
+            }
+        }
+    }
+}
+
+fn frobenius_inner(a: &Matrix, b: &Matrix) -> f64 {
+    assert_eq!(a.dim(), b.dim(), "Frobenius inner product shape mismatch");
+    a.iter().zip(b.iter()).map(|(lhs, rhs)| lhs * rhs).sum()
+}
+
+fn cg_beta(
+    variant: ConjugateGradientVariant,
+    next_grad: &Matrix,
+    transported_prev_grad: &Matrix,
+    prev_grad: &Matrix,
+) -> f64 {
+    let denom = frobenius_inner(prev_grad, prev_grad).max(1e-16);
+    let raw_beta = match variant {
+        ConjugateGradientVariant::FletcherReeves => frobenius_inner(next_grad, next_grad) / denom,
+        ConjugateGradientVariant::PolakRibierePlus => {
+            let grad_diff = next_grad - transported_prev_grad;
+            frobenius_inner(next_grad, &grad_diff) / denom
+        }
+    };
+
+    if raw_beta.is_finite() {
+        raw_beta.max(0.0)
+    } else {
+        0.0
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::linalg::trace;
     use approx::assert_abs_diff_eq;
-    use ndarray::{s, Array2};
+    use ndarray::{array, s, Array2};
 
     #[test]
     fn test_stiefel_projection() {
@@ -183,5 +400,65 @@ mod tests {
         // X^T * riem_grad should be skew-symmetric
         let sym_part = &xtg + &transpose(&xtg);
         assert!(frobenius_norm(&sym_part) < 1e-10);
+    }
+
+    #[test]
+    fn test_cg_with_backtracking_armijo_decreases_energy() {
+        let manifold = StiefelManifold::new(4, 2);
+        let initial =
+            Array2::from_shape_vec((4, 2), vec![1.0, 0.2, 0.3, 1.0, 0.2, 0.4, 0.1, 0.8]).unwrap();
+        let a = Array2::from_diag(&array![4.0, 3.0, 2.0, 1.0]);
+        let projected_initial = manifold.project(&initial).unwrap();
+        let initial_energy = rayleigh_energy(&a, &projected_initial);
+
+        let result = manifold
+            .optimize_cg_with_options(
+                &initial,
+                |x| -&(matmul(&a, x) * 2.0),
+                |x| rayleigh_energy(&a, x),
+                100,
+                1e-8,
+                &ManifoldOptimizationOptions::default(),
+            )
+            .unwrap();
+
+        assert!(result.converged);
+        assert!(result.energy < initial_energy);
+        assert!(result.last_step_size > 0.0);
+    }
+
+    #[test]
+    fn test_cg_accepts_fixed_step_line_search() {
+        let manifold = StiefelManifold::new(4, 2);
+        let initial =
+            Array2::from_shape_vec((4, 2), vec![0.8, 0.3, 0.1, 1.0, 0.5, 0.4, 0.2, 0.7]).unwrap();
+        let a = Array2::from_diag(&array![5.0, 4.0, 2.0, 1.0]);
+        let options = ManifoldOptimizationOptions {
+            line_search: LineSearchMethod::FixedStep(FixedStepLineSearch { step_size: 5e-2 }),
+            cg_variant: ConjugateGradientVariant::FletcherReeves,
+            log_interval: None,
+        };
+
+        let projected_initial = manifold.project(&initial).unwrap();
+        let initial_energy = rayleigh_energy(&a, &projected_initial);
+        let result = manifold
+            .optimize_cg_with_options(
+                &initial,
+                |x| -&(matmul(&a, x) * 2.0),
+                |x| rayleigh_energy(&a, x),
+                200,
+                1e-6,
+                &options,
+            )
+            .unwrap();
+
+        assert!(result.energy < initial_energy);
+        assert_abs_diff_eq!(result.last_step_size, 5e-2, epsilon = 1e-12);
+    }
+
+    fn rayleigh_energy(a: &Matrix, x: &Matrix) -> f64 {
+        let ax = matmul(a, x);
+        let xtax = matmul(&transpose(x), &ax);
+        -trace(&xtax)
     }
 }
