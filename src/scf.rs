@@ -57,10 +57,7 @@ impl HartreeFock {
         for iter in 0..max_iter {
             // Build density matrix: P = C_occ * C_occ^T
             let c_occ = c.slice(s![.., 0..n_occ]).to_owned();
-            let density = self.build_density(&c_occ);
-
-            // Build Fock matrix: F = H_core + G(P)
-            let fock = self.build_fock(&density);
+            let (density, fock) = self.density_and_fock_from_occupied(&c_occ);
 
             // Solve generalized eigenvalue problem: FC = SCE
             let (new_c, _orbital_energies) = self.solve_fock(&fock)?;
@@ -144,19 +141,15 @@ impl HartreeFock {
 
         // Energy function for manifold optimization
         let energy_fn = |y: &Matrix| -> f64 {
-            let c_occ = matmul(&s_inv_sqrt, y);
-            let density = self.build_density(&c_occ);
-            let fock = self.build_fock(&density);
-            self.compute_energy(&density, &fock)
+            let state = self.manifold_state(y, &s_inv_sqrt);
+            self.compute_energy(&state.density, &state.fock)
         };
 
         // Gradient function for manifold optimization
         let grad_fn = |y: &Matrix| -> Matrix {
-            let c_occ = matmul(&s_inv_sqrt, y);
-            let density = self.build_density(&c_occ);
-            let fock = self.build_fock(&density);
+            let state = self.manifold_state(y, &s_inv_sqrt);
             // Gradient: 4 * Fock * C_occ
-            let grad_c = &fock.dot(&c_occ) * 4.0;
+            let grad_c = &state.fock.dot(&state.c_occ) * 4.0;
             matmul(&transpose(&s_inv_sqrt), &grad_c)
         };
 
@@ -164,10 +157,8 @@ impl HartreeFock {
         let optimization = manifold
             .optimize_cg_with_options(&y_initial, grad_fn, energy_fn, max_iter, tol, options)?;
         let y_opt = optimization.point;
-
-        let c_occ_opt = matmul(&s_inv_sqrt, &y_opt);
-        let density = self.build_density(&c_occ_opt);
-        let energy = self.total_energy_from_density(&density);
+        let state = self.manifold_state(&y_opt, &s_inv_sqrt);
+        let energy = self.compute_energy(&state.density, &state.fock);
 
         // Complete the optimized occupied orbitals with an S-orthonormal virtual subspace.
         let y_full = complete_orthonormal_basis(&y_opt)?;
@@ -178,7 +169,7 @@ impl HartreeFock {
         Ok(SCFResult {
             energy,
             coefficients: c_full,
-            density,
+            density: state.density,
             converged: optimization.converged,
             iterations: optimization.iterations,
         })
@@ -193,6 +184,22 @@ impl HartreeFock {
     /// Builds density matrix from occupied orbitals: P = 2 * C_occ * C_occ^T
     fn build_density(&self, c_occ: &Matrix) -> Matrix {
         matmul(c_occ, &transpose(c_occ)) * 2.0
+    }
+
+    fn density_and_fock_from_occupied(&self, c_occ: &Matrix) -> (Matrix, Matrix) {
+        let density = self.build_density(c_occ);
+        let fock = self.build_fock(&density);
+        (density, fock)
+    }
+
+    fn manifold_state(&self, y: &Matrix, s_inv_sqrt: &Matrix) -> ManifoldState {
+        let c_occ = matmul(s_inv_sqrt, y);
+        let (density, fock) = self.density_and_fock_from_occupied(&c_occ);
+        ManifoldState {
+            c_occ,
+            density,
+            fock,
+        }
     }
 
     /// Builds Fock matrix: F = H_core + G(P)
@@ -325,6 +332,12 @@ pub struct SCFResult {
     pub converged: bool,
     /// Number of optimization / SCF iterations performed
     pub iterations: usize,
+}
+
+struct ManifoldState {
+    c_occ: Matrix,
+    density: Matrix,
+    fock: Matrix,
 }
 
 fn complete_orthonormal_basis(occupied: &Matrix) -> Result<Matrix, String> {

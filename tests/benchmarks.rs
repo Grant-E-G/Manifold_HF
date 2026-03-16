@@ -55,15 +55,47 @@ struct BondAngle {
     value: f64,
 }
 
-fn should_run(tags: &[String]) -> bool {
-    let run_all = matches!(
-        std::env::var("MANIFOLD_HF_BENCHMARKS").as_deref(),
-        Ok("1") | Ok("full") | Ok("all") | Ok("true")
-    );
-    if run_all {
-        return true;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkMode {
+    Quick,
+    Full,
+}
+
+impl BenchmarkMode {
+    fn current() -> Self {
+        if matches!(
+            std::env::var("MANIFOLD_HF_BENCHMARKS").as_deref(),
+            Ok("1") | Ok("full") | Ok("all") | Ok("true")
+        ) {
+            Self::Full
+        } else {
+            Self::Quick
+        }
     }
-    tags.iter().any(|tag| tag == "small")
+
+    fn should_run(self, tags: &[String]) -> bool {
+        matches!(self, Self::Full) || tags.iter().any(|tag| tag == "small")
+    }
+
+    fn abs_energy_tol(self) -> f64 {
+        match self {
+            Self::Quick => 1e-3,
+            Self::Full => 5e-3,
+        }
+    }
+}
+
+fn load_benchmarks(skip_label: &str) -> Option<Benchmarks> {
+    let path = Path::new("data/benchmarks.json");
+    if !path.exists() {
+        eprintln!("Skipping {}: data/benchmarks.json not found.", skip_label);
+        return None;
+    }
+
+    let contents = fs::read_to_string(path).expect("Failed to read benchmarks.json");
+    let data: Benchmarks = serde_json::from_str(&contents).expect("Invalid benchmarks.json");
+    assert!(data.version >= 1);
+    Some(data)
 }
 
 fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -272,25 +304,15 @@ fn reorder_density_into_reference_order(
 
 #[test]
 fn compare_benchmarks_to_reference() {
-    let path = Path::new("data/benchmarks.json");
-    if !path.exists() {
-        eprintln!("Skipping benchmarks: data/benchmarks.json not found.");
+    let Some(data) = load_benchmarks("benchmarks") else {
         return;
-    }
-
-    let contents = fs::read_to_string(path).expect("Failed to read benchmarks.json");
-    let data: Benchmarks = serde_json::from_str(&contents).expect("Invalid benchmarks.json");
-    assert!(data.version >= 1);
-
-    let run_all = matches!(
-        std::env::var("MANIFOLD_HF_BENCHMARKS").as_deref(),
-        Ok("1") | Ok("full") | Ok("all") | Ok("true")
-    );
-    let abs_energy_tol: f64 = if run_all { 5e-3 } else { 1e-3 };
+    };
+    let benchmark_mode = BenchmarkMode::current();
+    let abs_energy_tol = benchmark_mode.abs_energy_tol();
     let rel_energy_tol: f64 = 6e-2;
 
     for entry in data.molecules {
-        if !should_run(&entry.tags) {
+        if !benchmark_mode.should_run(&entry.tags) {
             continue;
         }
 
@@ -416,14 +438,9 @@ fn symmetry_geometry_h2o_c2v_hydrogen_exchange_mirror_metric() {
 /// Symmetry type: benchmark-input geometry check for `C2v` hydrogen-exchange mirror in `H2O`.
 #[test]
 fn symmetry_geometry_benchmark_h2o_c2v_hydrogen_exchange_mirror_metric() {
-    let path = Path::new("data/benchmarks.json");
-    if !path.exists() {
-        eprintln!("Skipping benchmark geometry symmetry check: data/benchmarks.json not found.");
+    let Some(data) = load_benchmarks("benchmark geometry symmetry check") else {
         return;
-    }
-
-    let contents = fs::read_to_string(path).expect("Failed to read benchmarks.json");
-    let data: Benchmarks = serde_json::from_str(&contents).expect("Invalid benchmarks.json");
+    };
     let entry = data
         .molecules
         .iter()

@@ -155,155 +155,140 @@ fn main() {
     options.title = Some(title_override.unwrap_or(default_title));
     options.description = Some(description_override.unwrap_or(default_description));
 
-    let svg = match render_mode {
-        RenderMode::AllOrbitals => {
-            let hf = HartreeFock::new(molecule.clone()).expect("Failed to build STO-3G basis");
-            let result = hf
-                .run_scf(100, 1e-6)
-                .expect("SCF failed while preparing orbital visualization");
-            let orbital = OrbitalSettings {
-                auto_expand_bounds,
-                ..Default::default()
-            };
-            let orbital_indices: Vec<usize> = (0..result.coefficients.ncols()).collect();
-            options.metrics.push(DiagramMetric::info(
-                "Geometry source",
-                "orbital probability",
-            ));
-            options.metrics.push(DiagramMetric::info(
-                "MO set",
-                format_orbital_index_list(&orbital_indices),
-            ));
-            append_orbital_exchange_symmetry_metrics(
-                &mut options.metrics,
-                &molecule,
-                &hf.basis,
-                &result.coefficients,
-                &orbital_indices,
-                options.projection,
-                orbital.plane_offset,
-            );
-            render_molecule_svg_with_orbitals(
-                &molecule,
-                &hf.basis,
-                &result.coefficients,
-                &options,
-                &orbital_indices,
-                &orbital,
-            )
-            .expect("Failed to render SVG with orbitals")
-        }
-        RenderMode::SingleOrbital => {
-            let hf = HartreeFock::new(molecule.clone()).expect("Failed to build STO-3G basis");
-            let result = hf
-                .run_scf(100, 1e-6)
-                .expect("SCF failed while preparing orbital visualization");
-            let orbital = OrbitalSettings {
-                orbital_index,
-                auto_expand_bounds,
-                ..Default::default()
-            };
-            options.metrics.push(DiagramMetric::info(
-                "Geometry source",
-                "orbital probability",
-            ));
-            options.metrics.push(DiagramMetric::info(
-                "MO set",
-                format!("MO {}", orbital_index),
-            ));
-            append_orbital_exchange_symmetry_metrics(
-                &mut options.metrics,
-                &molecule,
-                &hf.basis,
-                &result.coefficients,
-                &[orbital_index],
-                options.projection,
-                orbital.plane_offset,
-            );
-            render_molecule_svg_with_orbital(
-                &molecule,
-                &hf.basis,
-                &result.coefficients,
-                &options,
-                &orbital,
-            )
-            .expect("Failed to render SVG with orbital")
-        }
-        RenderMode::BondingOrbitals => {
-            let hf = HartreeFock::new(molecule.clone()).expect("Failed to build STO-3G basis");
-            let result = hf
-                .run_scf(100, 1e-6)
-                .expect("SCF failed while preparing orbital visualization");
-            let orbital = OrbitalSettings {
-                auto_expand_bounds,
-                ..Default::default()
-            };
-            let orbital_indices =
-                default_bonding_orbital_indices(&molecule, result.coefficients.ncols());
-            options.metrics.push(DiagramMetric::info(
-                "Geometry source",
-                "orbital probability",
-            ));
-            options.metrics.push(DiagramMetric::info(
-                "MO set",
-                format_orbital_index_list(&orbital_indices),
-            ));
-            append_orbital_exchange_symmetry_metrics(
-                &mut options.metrics,
-                &molecule,
-                &hf.basis,
-                &result.coefficients,
-                &orbital_indices,
-                options.projection,
-                orbital.plane_offset,
-            );
-            render_molecule_svg_with_orbitals(
-                &molecule,
-                &hf.basis,
-                &result.coefficients,
-                &options,
-                &orbital_indices,
-                &orbital,
-            )
-            .expect("Failed to render SVG with orbitals")
-        }
-        RenderMode::Density => {
-            let hf = HartreeFock::new(molecule.clone()).expect("Failed to build STO-3G basis");
-            let result = hf
-                .run_scf(100, 1e-6)
-                .expect("SCF failed while preparing density visualization");
-            let density = DensitySettings {
-                auto_expand_bounds,
-                ..Default::default()
-            };
-            options
-                .metrics
-                .push(DiagramMetric::info("Geometry source", "nuclear positions"));
-            render_molecule_svg_with_density(
-                &molecule,
-                &hf.basis,
-                &result.density,
-                &options,
-                &density,
-            )
-            .expect("Failed to render SVG with electron density")
-        }
-        RenderMode::GeometryOnly => {
-            options
-                .metrics
-                .push(DiagramMetric::info("Geometry source", "nuclear positions"));
-            render_molecule_svg(&molecule, &options).expect("Failed to render SVG")
-        }
-    };
+    let svg = render_svg(
+        &molecule,
+        &mut options,
+        render_mode,
+        orbital_index,
+        auto_expand_bounds,
+    );
 
     std::fs::write(&output, svg).expect("Failed to write SVG output");
     println!("Wrote {}", output);
+}
+
+fn render_svg(
+    molecule: &Molecule,
+    options: &mut DiagramOptions,
+    render_mode: RenderMode,
+    orbital_index: usize,
+    auto_expand_bounds: bool,
+) -> String {
+    match render_mode {
+        RenderMode::AllOrbitals | RenderMode::SingleOrbital | RenderMode::BondingOrbitals => {
+            render_orbital_visualization(
+                molecule,
+                options,
+                render_mode,
+                orbital_index,
+                auto_expand_bounds,
+            )
+        }
+        RenderMode::Density => render_density_visualization(molecule, options, auto_expand_bounds),
+        RenderMode::GeometryOnly => {
+            append_geometry_source_metric(&mut options.metrics, "nuclear positions");
+            render_molecule_svg(molecule, options).expect("Failed to render SVG")
+        }
+    }
 }
 
 fn print_usage() {
     eprintln!(
         "Usage: cargo run --example render_molecule -- [h2|h2o|d2o] [--out FILE.svg] [--bonding-orbitals] [--orbital N] [--all-orbitals] [--density|--no-density] [--auto-bounds] [--debug-metrics] [--title TEXT] [--description TEXT]"
     );
+}
+
+fn render_orbital_visualization(
+    molecule: &Molecule,
+    options: &mut DiagramOptions,
+    render_mode: RenderMode,
+    orbital_index: usize,
+    auto_expand_bounds: bool,
+) -> String {
+    let (hf, result) =
+        solve_hf_for_visualization(molecule, "SCF failed while preparing orbital visualization");
+    let orbital = OrbitalSettings {
+        orbital_index: if matches!(render_mode, RenderMode::SingleOrbital) {
+            orbital_index
+        } else {
+            0
+        },
+        auto_expand_bounds,
+        ..Default::default()
+    };
+    let orbital_indices = match render_mode {
+        RenderMode::AllOrbitals => (0..result.coefficients.ncols()).collect(),
+        RenderMode::SingleOrbital => vec![orbital_index],
+        RenderMode::BondingOrbitals => {
+            default_bonding_orbital_indices(molecule, result.coefficients.ncols())
+        }
+        RenderMode::Density | RenderMode::GeometryOnly => unreachable!(),
+    };
+
+    append_geometry_source_metric(&mut options.metrics, "orbital probability");
+    options.metrics.push(DiagramMetric::info(
+        "MO set",
+        format_orbital_index_list(&orbital_indices),
+    ));
+    append_orbital_exchange_symmetry_metrics(
+        &mut options.metrics,
+        molecule,
+        &hf.basis,
+        &result.coefficients,
+        &orbital_indices,
+        options.projection,
+        orbital.plane_offset,
+    );
+
+    if matches!(render_mode, RenderMode::SingleOrbital) {
+        render_molecule_svg_with_orbital(
+            molecule,
+            &hf.basis,
+            &result.coefficients,
+            options,
+            &orbital,
+        )
+        .expect("Failed to render SVG with orbital")
+    } else {
+        render_molecule_svg_with_orbitals(
+            molecule,
+            &hf.basis,
+            &result.coefficients,
+            options,
+            &orbital_indices,
+            &orbital,
+        )
+        .expect("Failed to render SVG with orbitals")
+    }
+}
+
+fn render_density_visualization(
+    molecule: &Molecule,
+    options: &mut DiagramOptions,
+    auto_expand_bounds: bool,
+) -> String {
+    let (hf, result) =
+        solve_hf_for_visualization(molecule, "SCF failed while preparing density visualization");
+    let density = DensitySettings {
+        auto_expand_bounds,
+        ..Default::default()
+    };
+    append_geometry_source_metric(&mut options.metrics, "nuclear positions");
+    render_molecule_svg_with_density(molecule, &hf.basis, &result.density, options, &density)
+        .expect("Failed to render SVG with electron density")
+}
+
+fn solve_hf_for_visualization(
+    molecule: &Molecule,
+    scf_error: &str,
+) -> (HartreeFock, manifold_hf::scf::SCFResult) {
+    let hf = HartreeFock::new(molecule.clone()).expect("Failed to build STO-3G basis");
+    let result = hf.run_scf(100, 1e-6).expect(scf_error);
+    (hf, result)
+}
+
+fn append_geometry_source_metric(metrics: &mut Vec<DiagramMetric>, source: &str) {
+    metrics.push(DiagramMetric::info("Geometry source", source));
 }
 
 fn default_bonding_orbital_indices(molecule: &Molecule, total_orbitals: usize) -> Vec<usize> {
