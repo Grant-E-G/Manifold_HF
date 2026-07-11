@@ -209,16 +209,20 @@ def bond_pairs(atoms):
 
 
 def grid_coordinates(cube):
-    # Our exporter writes orthogonal axes, but support the general case.
+    # Support both axis-aligned and rotated/skewed cube grids.
     nx, ny, nz = cube["nx"], cube["ny"], cube["nz"]
     origin = cube["origin"]
     ax, ay, az = cube["ax"], cube["ay"], cube["az"]
-
-    xs = origin[0] + np.arange(nx) * ax[0]
-    ys = origin[1] + np.arange(ny) * ay[1]
-    zs = origin[2] + np.arange(nz) * az[2]
-    zz, yy, xx = np.meshgrid(zs, ys, xs, indexing="ij")
-    return xx, yy, zz
+    iz, iy, ix = np.meshgrid(
+        np.arange(nz), np.arange(ny), np.arange(nx), indexing="ij"
+    )
+    coords = (
+        origin
+        + ix[..., np.newaxis] * ax
+        + iy[..., np.newaxis] * ay
+        + iz[..., np.newaxis] * az
+    )
+    return coords[..., 0], coords[..., 1], coords[..., 2]
 
 
 def orbital_center_of_mass(values, xx, yy, zz):
@@ -539,11 +543,20 @@ def main():
         action="store_true",
         help="Render text labels next to orbital center-of-mass markers.",
     )
-    parser.add_argument(
+    annotation_group = parser.add_mutually_exclusive_group()
+    annotation_group.add_argument(
         "--derived-annotation",
+        dest="derived_annotation",
         action="store_true",
-        help="Add an on-figure annotation with derived geometry/orbital stats.",
+        help="Add an on-figure validation report (the default).",
     )
+    annotation_group.add_argument(
+        "--no-derived-annotation",
+        dest="derived_annotation",
+        action="store_false",
+        help="Hide the on-figure validation report.",
+    )
+    parser.set_defaults(derived_annotation=True)
     args = parser.parse_args()
     if args.profile == "blog":
         # Blog preset: clean, physically interpretable default view.
@@ -863,10 +876,21 @@ def main():
             dv = abs(float(np.dot(ax, np.cross(ay, az))))
             stats = orbital_stats(values, xx, yy, zz, dv, None)
 
+            abs_values = np.abs(values)
+            boundary_max = float(
+                max(
+                    abs_values[0, :, :].max(),
+                    abs_values[-1, :, :].max(),
+                    abs_values[:, 0, :].max(),
+                    abs_values[:, -1, :].max(),
+                    abs_values[:, :, 0].max(),
+                    abs_values[:, :, -1].max(),
+                )
+            )
+
             group = f"mo{orbital_index}" if orbital_index is not None else stem
             iso_used = None
             clipped = False
-            boundary_max = None
 
             if args.render == "isosurface":
                 x_flat = (xx * unit_scale).ravel()
@@ -884,17 +908,6 @@ def main():
                     if math.isfinite(max_abs) and max_abs > 0.0:
                         iso = max(iso, args.iso_min_frac * max_abs)
 
-                abs_vals = np.abs(values)
-                boundary_max = float(
-                    max(
-                        abs_vals[0, :, :].max(),
-                        abs_vals[-1, :, :].max(),
-                        abs_vals[:, 0, :].max(),
-                        abs_vals[:, -1, :].max(),
-                        abs_vals[:, :, 0].max(),
-                        abs_vals[:, :, -1].max(),
-                    )
-                )
                 clipped = boundary_max >= iso
                 if clipped and not args.allow_clipping:
                     iso = boundary_max * 1.05 + 1e-12
@@ -1257,6 +1270,10 @@ def main():
             for rep in orbital_reports[:max_rows]:
                 stats = rep["stats"]
                 rms = stats["rms_radius_bohr"]
+                norm_error = abs(stats["norm_box"] - 1.0)
+                norm_status = "OK" if norm_error <= 0.05 else "CHECK norm/grid bounds"
+                edge_ratio = rep["boundary_max"] / max(stats["peak_abs"], 1e-300)
+                edge_status = "OK" if edge_ratio <= 0.02 else "CHECK grid clipping"
                 rms_txt = (
                     f"{(rms * unit_scale):.3f} {args.unit}"
                     if rms is not None
@@ -1266,7 +1283,8 @@ def main():
                     row = (
                         f"  {rep['label']}: "
                         f"∫|psi|²dV≈{stats['norm_box']:.4f}, "
-                        f"rms={rms_txt}"
+                        f"rms={rms_txt}, edge/peak={edge_ratio:.2e}; "
+                        f"{norm_status}, {edge_status}"
                     )
                 else:
                     posf = stats["iso_pos_frac"]
@@ -1278,11 +1296,14 @@ def main():
                         f"  {rep['label']}: iso={rep['iso']:.3g}, "
                         f"∫|psi|²dV≈{stats['norm_box']:.4f}, "
                         f"rms={rms_txt}, f+={pos_txt}, f-={neg_txt}, {clip_txt}"
+                        f", edge/peak={edge_ratio:.2e}; {norm_status}, {edge_status}"
                     )
                 lines.append(row)
             if len(orbital_reports) > max_rows:
                 lines.append(f"  ... ({len(orbital_reports) - max_rows} more orbitals)")
         annotation_text = "<br>".join(lines)
+        print("\nVisualization validation report")
+        print("\n".join(lines).replace("<br>", "\n"))
 
     right_margin = 120
     if args.render == "slices":

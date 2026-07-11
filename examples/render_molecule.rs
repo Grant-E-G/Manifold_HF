@@ -4,7 +4,7 @@ use manifold_hf::basis::BasisSet;
 use manifold_hf::{
     render_molecule_svg, render_molecule_svg_with_density, render_molecule_svg_with_orbital,
     render_molecule_svg_with_orbitals, DensitySettings, DiagramMetric, DiagramOptions, HartreeFock,
-    LengthUnit, Matrix, Molecule, OrbitalSettings, ProjectionPlane,
+    LengthUnit, Matrix, Molecule, OrbitalSettings, ProjectionPlane, SCFResult,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +207,7 @@ fn render_orbital_visualization(
 ) -> String {
     let (hf, result) =
         solve_hf_for_visualization(molecule, "SCF failed while preparing orbital visualization");
+    append_hf_validation_metrics(&mut options.metrics, &hf, &result);
     let orbital = OrbitalSettings {
         orbital_index: if matches!(render_mode, RenderMode::SingleOrbital) {
             orbital_index
@@ -269,6 +270,7 @@ fn render_density_visualization(
 ) -> String {
     let (hf, result) =
         solve_hf_for_visualization(molecule, "SCF failed while preparing density visualization");
+    append_hf_validation_metrics(&mut options.metrics, &hf, &result);
     let density = DensitySettings {
         auto_expand_bounds,
         ..Default::default()
@@ -289,6 +291,81 @@ fn solve_hf_for_visualization(
 
 fn append_geometry_source_metric(metrics: &mut Vec<DiagramMetric>, source: &str) {
     metrics.push(DiagramMetric::info("Geometry source", source));
+}
+
+fn append_hf_validation_metrics(
+    metrics: &mut Vec<DiagramMetric>,
+    hf: &HartreeFock,
+    result: &SCFResult,
+) {
+    match hf.diagnostics(result) {
+        Ok(diagnostics) => {
+            println!(
+                "\n{}\n",
+                diagnostics.human_readable_report(result.converged, result.iterations)
+            );
+            metrics.push(if result.converged {
+                DiagramMetric::good(
+                    "HF status",
+                    format!("converged ({} iter)", result.iterations),
+                )
+            } else {
+                DiagramMetric::critical(
+                    "HF status",
+                    format!("not converged ({} iter)", result.iterations),
+                )
+            });
+            metrics.push(DiagramMetric::info(
+                "Total energy",
+                format!("{:.8} Ha", diagnostics.total_energy),
+            ));
+            metrics.push(DiagramMetric::info(
+                "Electronic energy",
+                format!("{:.8} Ha", diagnostics.electronic_energy),
+            ));
+            metrics.push(DiagramMetric::info(
+                "Nuclear repulsion",
+                format!("{:.8} Ha", diagnostics.nuclear_energy),
+            ));
+            metrics.push(residual_metric(
+                "Electron-count error",
+                diagnostics.electron_count_error,
+                1e-8,
+                1e-5,
+            ));
+            metrics.push(residual_metric(
+                "Energy/density mismatch",
+                diagnostics.energy_consistency_error,
+                1e-10,
+                1e-7,
+            ));
+            metrics.push(residual_metric(
+                "Density symmetry error",
+                diagnostics.density_symmetry_residual,
+                1e-10,
+                1e-7,
+            ));
+            metrics.push(residual_metric(
+                "Density idempotency error",
+                diagnostics.density_idempotency_residual,
+                1e-8,
+                1e-5,
+            ));
+            metrics.push(residual_metric(
+                "MO orthonormality error",
+                diagnostics.orbital_orthonormality_residual,
+                1e-8,
+                1e-5,
+            ));
+            metrics.push(residual_metric(
+                "SCF equation residual",
+                diagnostics.scf_commutator_residual,
+                1e-7,
+                1e-4,
+            ));
+        }
+        Err(error) => metrics.push(DiagramMetric::critical("HF validation", error)),
+    }
 }
 
 fn default_bonding_orbital_indices(molecule: &Molecule, total_orbitals: usize) -> Vec<usize> {

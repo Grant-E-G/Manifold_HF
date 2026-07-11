@@ -79,8 +79,17 @@ impl BenchmarkMode {
 
     fn abs_energy_tol(self) -> f64 {
         match self {
-            Self::Quick => 1e-3,
+            Self::Quick => 2e-5,
             Self::Full => 5e-3,
+        }
+    }
+
+    fn rel_energy_tol(self) -> f64 {
+        match self {
+            // H2/H2O/D2O are mature baseline cases and should closely match PySCF.
+            Self::Quick => 1e-7,
+            // Larger systems retain a looser tolerance while the integral engine evolves.
+            Self::Full => 6e-2,
         }
     }
 }
@@ -309,7 +318,7 @@ fn compare_benchmarks_to_reference() {
     };
     let benchmark_mode = BenchmarkMode::current();
     let abs_energy_tol = benchmark_mode.abs_energy_tol();
-    let rel_energy_tol: f64 = 6e-2;
+    let rel_energy_tol = benchmark_mode.rel_energy_tol();
 
     for entry in data.molecules {
         if !benchmark_mode.should_run(&entry.tags) {

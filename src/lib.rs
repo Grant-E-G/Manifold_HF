@@ -26,7 +26,7 @@ pub use manifold::{
     ManifoldOptimizationOptions, ManifoldOptimizationResult, StiefelManifold,
 };
 pub use molecule::Molecule;
-pub use scf::HartreeFock;
+pub use scf::{HFDiagnostics, HartreeFock, SCFResult};
 pub use visualize::{
     render_molecule_svg, render_molecule_svg_with_density, render_molecule_svg_with_orbital,
     render_molecule_svg_with_orbitals, DensitySettings, DiagramMetric, DiagramOptions, LengthUnit,

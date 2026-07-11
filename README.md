@@ -225,8 +225,34 @@ MANIFOLD_HF_BENCHMARKS=full cargo test --test benchmarks
 ```
 
 If `data/benchmarks.json` is missing, the benchmark test will skip.
-Energy comparisons currently use a 6% relative tolerance while the integral
-engine is still being refined for heavier systems.
+The quick H2/H2O/D2O baseline uses tight absolute/relative energy tolerances. Full-mode comparisons
+retain a 6% relative tolerance for larger systems while the integral engine is still being refined.
+
+## HF Validation and 2D Diagnostics
+
+The baseline solver implements restricted, closed-shell Hartree-Fock (RHF). It rejects odd-electron
+and non-singlet inputs instead of silently dropping an unpaired electron. SCF convergence is checked
+with changes in total energy and density, so harmless MO sign flips or rotations within a degenerate
+subspace do not prevent convergence.
+
+Every result can be checked with physical, human-readable invariants:
+
+```rust
+let hf = HartreeFock::new(Molecule::h2()).unwrap();
+let result = hf.run_scf(100, 1e-6).unwrap();
+let diagnostics = hf.diagnostics(&result).unwrap();
+println!("{}", diagnostics.human_readable_report(result.converged, result.iterations));
+```
+
+The report includes the energy decomposition and density consistency, electron count from
+`Tr[P S]`, density symmetry/idempotency, MO overlap error `||C^T S C - I||`, and the
+Roothaan-Hall stationarity residual `||F P S - S P F||`.
+
+Generate an SVG with the same checks shown in its diagnostics panel:
+
+```bash
+cargo run --example render_molecule -- h2o --density --out h2o_density.svg
+```
 
 ## 3D Visualization
 
@@ -243,6 +269,10 @@ By default the viewer renders **distribution point clouds** (not isosurfaces), w
 ```bash
 python scripts/visualize_orbitals_3d.py --cube h2o_orb0.cube --out h2o_orb0.html
 ```
+
+The viewer prints and displays a validation report by default: molecular geometry, orbital box
+normalization, RMS extent, and boundary-to-peak amplitude with explicit `OK`/`CHECK` labels. Use
+`--no-derived-annotation` only when a clean figure without the on-figure report is desired.
 
 To render distribution slice planes instead:
 
@@ -302,7 +332,10 @@ Tests cover:
 - Molecular properties
 - Basis set construction
 - Manifold operations
-- SCF convergence
+- Independent He and H2 STO-3G/RHF reference energies
+- Standard/manifold agreement and RHF input validation
+- Electron count, density symmetry, MO orthonormality, and SCF stationarity
+- PySCF energy benchmarks plus H2/H2O geometry and symmetry invariants
 
 ## Performance
 

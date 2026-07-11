@@ -27,7 +27,15 @@ pub struct HartreeFock {
 impl HartreeFock {
     /// Creates a new Hartree-Fock calculator
     pub fn new(molecule: Molecule) -> Result<Self, String> {
+        validate_restricted_closed_shell(&molecule)?;
         let basis = BasisSet::sto3g(&molecule)?;
+        if molecule.num_occupied() > basis.size() {
+            return Err(format!(
+                "restricted HF needs {} occupied orbitals, but the basis has only {} functions",
+                molecule.num_occupied(),
+                basis.size()
+            ));
+        }
         let overlap = basis.overlap_matrix();
         let core_hamiltonian = basis.core_hamiltonian(&molecule);
         let eri = basis.two_electron_integrals();
@@ -52,7 +60,9 @@ impl HartreeFock {
         let mut c = self.initial_guess()?;
         let mut converged = false;
         let mut iterations = 0usize;
-        let mut previous_energy: Option<f64> = None;
+        let initial_occupied = c.slice(s![.., 0..n_occ]).to_owned();
+        let initial_density = self.build_density(&initial_occupied);
+        let mut previous_energy = self.total_energy_from_density(&initial_density);
 
         for iter in 0..max_iter {
             // Build density matrix: P = C_occ * C_occ^T
@@ -62,17 +72,19 @@ impl HartreeFock {
             // Solve generalized eigenvalue problem: FC = SCE
             let (new_c, _orbital_energies) = self.solve_fock(&fock)?;
 
-            // Compute energy
-            let new_energy = self.compute_energy(&density, &fock);
+            // Compare physical states rather than raw MO coefficients. Eigenvectors may
+            // flip sign (or rotate inside a degenerate subspace) without changing P.
+            let new_c_occ = new_c.slice(s![.., 0..n_occ]).to_owned();
+            let new_density = self.build_density(&new_c_occ);
+            let new_energy = self.total_energy_from_density(&new_density);
 
             // Check convergence
-            let energy_diff = previous_energy
-                .map(|energy| (new_energy - energy).abs())
-                .unwrap_or(f64::INFINITY);
-            let c_diff = frobenius_norm(&(&new_c - &c));
+            let energy_diff = (new_energy - previous_energy).abs();
+            let density_scale = frobenius_norm(&density).max(1.0);
+            let density_diff = frobenius_norm(&(&new_density - &density)) / density_scale;
             iterations = iter + 1;
 
-            if iter > 0 && energy_diff < tol && c_diff < tol {
+            if energy_diff < tol && density_diff < tol {
                 converged = true;
                 c = new_c;
                 println!("SCF converged in {} iterations", iterations);
@@ -82,13 +94,13 @@ impl HartreeFock {
 
             if iter % 5 == 0 {
                 println!(
-                    "Iteration {}: E = {:.10} Hartree, ΔE = {:.2e}",
-                    iter, new_energy, energy_diff
+                    "Iteration {}: E = {:.10} Hartree, ΔE = {:.2e}, ΔP = {:.2e}",
+                    iter, new_energy, energy_diff, density_diff
                 );
             }
 
             c = new_c;
-            previous_energy = Some(new_energy);
+            previous_energy = new_energy;
         }
 
         if !converged {
@@ -214,6 +226,69 @@ impl HartreeFock {
         self.compute_energy(density, &fock)
     }
 
+    /// Computes physical consistency checks for a returned HF state.
+    ///
+    /// These diagnostics are invariant to orbital signs and occupied-orbital
+    /// rotations, making them more useful than inspecting coefficients directly.
+    pub fn diagnostics(&self, result: &SCFResult) -> Result<HFDiagnostics, String> {
+        let n = self.basis.size();
+        if result.density.dim() != (n, n) {
+            return Err(format!(
+                "density has shape {:?}; expected ({}, {})",
+                result.density.dim(),
+                n,
+                n
+            ));
+        }
+        if result.coefficients.dim() != (n, n) {
+            return Err(format!(
+                "coefficient matrix has shape {:?}; expected ({}, {})",
+                result.coefficients.dim(),
+                n,
+                n
+            ));
+        }
+
+        let density_transpose = transpose(&result.density);
+        let density_symmetry_residual = frobenius_norm(&(&result.density - &density_transpose));
+
+        let cts = matmul(&transpose(&result.coefficients), &self.overlap);
+        let ctsc = matmul(&cts, &result.coefficients);
+        let identity = Matrix::eye(n);
+        let orbital_orthonormality_residual = frobenius_norm(&(&ctsc - &identity));
+
+        let electron_count = trace(&matmul(&result.density, &self.overlap));
+        let expected_electron_count = self.molecule.num_electrons() as f64;
+        let electron_count_error = (electron_count - expected_electron_count).abs();
+
+        // For a closed-shell Slater determinant with P = 2 C_occ C_occ^T,
+        // non-orthogonal AO idempotency is P S P = 2 P.
+        let psp = matmul(&matmul(&result.density, &self.overlap), &result.density);
+        let density_idempotency_residual = frobenius_norm(&(&psp - &(&result.density * 2.0)));
+
+        let fock = self.build_fock(&result.density);
+        let fps = matmul(&matmul(&fock, &result.density), &self.overlap);
+        let spf = matmul(&matmul(&self.overlap, &result.density), &fock);
+        let scf_commutator_residual = frobenius_norm(&(&fps - &spf));
+
+        let nuclear_energy = self.molecule.nuclear_repulsion();
+        let recomputed_total_energy = self.compute_energy(&result.density, &fock);
+        let energy_consistency_error = (result.energy - recomputed_total_energy).abs();
+        Ok(HFDiagnostics {
+            total_energy: result.energy,
+            electronic_energy: result.energy - nuclear_energy,
+            nuclear_energy,
+            electron_count,
+            expected_electron_count,
+            electron_count_error,
+            energy_consistency_error,
+            density_symmetry_residual,
+            density_idempotency_residual,
+            orbital_orthonormality_residual,
+            scf_commutator_residual,
+        })
+    }
+
     /// Builds two-electron part of Fock matrix (simplified)
     fn build_g_matrix(&self, density: &Matrix) -> Matrix {
         let n = self.basis.size();
@@ -277,6 +352,37 @@ impl HartreeFock {
     }
 }
 
+fn validate_restricted_closed_shell(molecule: &Molecule) -> Result<(), String> {
+    if molecule.atoms.is_empty() {
+        return Err("restricted HF requires at least one atom".to_string());
+    }
+    let nuclear_charge: i64 = molecule
+        .atoms
+        .iter()
+        .map(|atom| i64::from(atom.atomic_number))
+        .sum();
+    let electrons = nuclear_charge - i64::from(molecule.charge);
+    if electrons <= 0 {
+        return Err(format!(
+            "restricted HF requires a positive electron count; got {}",
+            electrons
+        ));
+    }
+    if molecule.multiplicity != 1 {
+        return Err(format!(
+            "restricted closed-shell HF supports only multiplicity 1; got {}",
+            molecule.multiplicity
+        ));
+    }
+    if electrons % 2 != 0 {
+        return Err(format!(
+            "restricted closed-shell HF requires an even electron count; got {}",
+            electrons
+        ));
+    }
+    Ok(())
+}
+
 impl HartreeFock {
     fn eri_index(&self, i: usize, j: usize, k: usize, l: usize, n: usize) -> usize {
         ((i * n + j) * n + k) * n + l
@@ -332,6 +438,60 @@ pub struct SCFResult {
     pub converged: bool,
     /// Number of optimization / SCF iterations performed
     pub iterations: usize,
+}
+
+/// Basis-independent and AO-matrix consistency checks for an HF result.
+#[derive(Debug, Clone)]
+pub struct HFDiagnostics {
+    pub total_energy: f64,
+    pub electronic_energy: f64,
+    pub nuclear_energy: f64,
+    pub electron_count: f64,
+    pub expected_electron_count: f64,
+    pub electron_count_error: f64,
+    /// Difference between the stored energy and energy recomputed from the density.
+    pub energy_consistency_error: f64,
+    pub density_symmetry_residual: f64,
+    /// Frobenius norm of `P S P - 2 P` for a closed-shell density.
+    pub density_idempotency_residual: f64,
+    pub orbital_orthonormality_residual: f64,
+    /// Frobenius norm of `F P S - S P F`; zero at an SCF stationary point.
+    pub scf_commutator_residual: f64,
+}
+
+impl HFDiagnostics {
+    /// A compact text report suitable for logs and visualization sidecars.
+    pub fn human_readable_report(&self, converged: bool, iterations: usize) -> String {
+        let status = if converged {
+            "PASS (converged)"
+        } else {
+            "WARN (not converged)"
+        };
+        format!(
+            "HF validation: {status}\n\
+             iterations: {iterations}\n\
+             total energy: {:.10} Ha\n\
+             electronic energy: {:.10} Ha\n\
+             nuclear repulsion: {:.10} Ha\n\
+             electrons from Tr[P S]: {:.8} (expected {:.0}, error {:.3e})\n\
+             energy/density consistency error: {:.3e} Ha\n\
+             density symmetry ||P-P^T||_F: {:.3e}\n\
+             density idempotency ||P S P-2P||_F: {:.3e}\n\
+             MO orthonormality ||C^T S C-I||_F: {:.3e}\n\
+             SCF stationarity ||F P S-S P F||_F: {:.3e}",
+            self.total_energy,
+            self.electronic_energy,
+            self.nuclear_energy,
+            self.electron_count,
+            self.expected_electron_count,
+            self.electron_count_error,
+            self.energy_consistency_error,
+            self.density_symmetry_residual,
+            self.density_idempotency_residual,
+            self.orbital_orthonormality_residual,
+            self.scf_commutator_residual,
+        )
+    }
 }
 
 struct ManifoldState {
@@ -391,7 +551,42 @@ fn complete_orthonormal_basis(occupied: &Matrix) -> Result<Matrix, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::molecule::Atom;
     use approx::assert_abs_diff_eq;
+
+    fn assert_physical_invariants(hf: &HartreeFock, result: &SCFResult, tolerance: f64) {
+        let diagnostics = hf.diagnostics(result).expect("diagnostics failed");
+        assert!(
+            diagnostics.electron_count_error < tolerance,
+            "wrong electron count:\n{}",
+            diagnostics.human_readable_report(result.converged, result.iterations)
+        );
+        assert!(
+            diagnostics.energy_consistency_error < tolerance,
+            "stored energy does not match the returned density:\n{}",
+            diagnostics.human_readable_report(result.converged, result.iterations)
+        );
+        assert!(
+            diagnostics.density_symmetry_residual < tolerance,
+            "density is not symmetric:\n{}",
+            diagnostics.human_readable_report(result.converged, result.iterations)
+        );
+        assert!(
+            diagnostics.density_idempotency_residual < tolerance,
+            "density is not closed-shell idempotent:\n{}",
+            diagnostics.human_readable_report(result.converged, result.iterations)
+        );
+        assert!(
+            diagnostics.orbital_orthonormality_residual < tolerance,
+            "orbitals are not S-orthonormal:\n{}",
+            diagnostics.human_readable_report(result.converged, result.iterations)
+        );
+        assert!(
+            diagnostics.scf_commutator_residual < tolerance,
+            "Roothaan-Hall stationarity residual is too large:\n{}",
+            diagnostics.human_readable_report(result.converged, result.iterations)
+        );
+    }
 
     #[test]
     fn test_hf_h2_scf() {
@@ -403,6 +598,9 @@ mod tests {
         // Energy should be negative (binding)
         assert!(result.energy < 0.0);
         assert!(result.iterations > 0);
+        // Independent STO-3G/RHF reference at R=1.4 Bohr.
+        assert_abs_diff_eq!(result.energy, -1.116_714_225_3, epsilon = 2e-8);
+        assert_physical_invariants(&hf, &result, 1e-7);
     }
 
     #[test]
@@ -413,6 +611,67 @@ mod tests {
 
         assert!(result.converged);
         assert!(result.energy < 0.0);
+        assert_abs_diff_eq!(result.energy, -1.116_714_225_3, epsilon = 2e-8);
+        assert_physical_invariants(&hf, &result, 1e-7);
+    }
+
+    #[test]
+    fn test_helium_one_basis_function_reference_case() {
+        // He/STO-3G is the smallest nontrivial closed-shell atom: one occupied
+        // spatial orbital and no geometry or nuclear-repulsion ambiguity.
+        let molecule = Molecule::new(vec![Atom::new(2, [0.0, 0.0, 0.0])], 0, 1);
+        let hf = HartreeFock::new(molecule).unwrap();
+        let result = hf.run_scf(20, 1e-10).unwrap();
+
+        assert!(result.converged);
+        assert_eq!(hf.basis.size(), 1);
+        assert_abs_diff_eq!(result.energy, -2.807_783_957_5, epsilon = 2e-8);
+        assert_physical_invariants(&hf, &result, 1e-9);
+    }
+
+    #[test]
+    fn test_standard_and_manifold_h2_agree() {
+        let hf = HartreeFock::new(Molecule::h2()).unwrap();
+        let standard = hf.run_scf(100, 1e-8).unwrap();
+        let manifold = hf.run_scf_manifold(100, 1e-8).unwrap();
+
+        assert!(standard.converged && manifold.converged);
+        assert_abs_diff_eq!(standard.energy, manifold.energy, epsilon = 1e-8);
+        let density_gap = frobenius_norm(&(&standard.density - &manifold.density));
+        assert!(density_gap < 1e-7, "density gap = {density_gap:.3e}");
+    }
+
+    #[test]
+    fn test_water_multicenter_reference_and_invariants() {
+        // Exercises s/p functions, five occupied orbitals, multicenter nuclear
+        // attraction, and the full Coulomb/exchange contraction.
+        let hf = HartreeFock::new(Molecule::h2o()).unwrap();
+        let result = hf.run_scf(100, 1e-7).unwrap();
+
+        assert!(result.converged);
+        assert_abs_diff_eq!(result.energy, -74.963_074_544_5, epsilon = 3e-7);
+        assert_physical_invariants(&hf, &result, 1e-6);
+    }
+
+    #[test]
+    fn test_restricted_hf_rejects_open_shell_inputs() {
+        let hydrogen_atom = Molecule::new(vec![Atom::new(1, [0.0, 0.0, 0.0])], 0, 2);
+        let error = HartreeFock::new(hydrogen_atom)
+            .err()
+            .expect("open-shell input should be rejected");
+        assert!(
+            error.contains("multiplicity 1"),
+            "unexpected error: {error}"
+        );
+
+        let odd_electron_singlet = Molecule::new(vec![Atom::new(1, [0.0, 0.0, 0.0])], 0, 1);
+        let error = HartreeFock::new(odd_electron_singlet)
+            .err()
+            .expect("odd-electron RHF input should be rejected");
+        assert!(
+            error.contains("even electron count"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
