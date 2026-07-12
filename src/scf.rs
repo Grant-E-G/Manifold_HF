@@ -554,6 +554,21 @@ mod tests {
     use crate::molecule::Atom;
     use approx::assert_abs_diff_eq;
 
+    // Fixed geometries below are in Angstrom; reference energies were generated
+    // independently with PySCF 2.11 RHF/STO-3G.
+    const ANGSTROM_TO_BOHR: f64 = 1.889_725_988_6;
+
+    fn atom_angstrom(atomic_number: u32, position: [f64; 3]) -> Atom {
+        Atom::new(
+            atomic_number,
+            [
+                position[0] * ANGSTROM_TO_BOHR,
+                position[1] * ANGSTROM_TO_BOHR,
+                position[2] * ANGSTROM_TO_BOHR,
+            ],
+        )
+    }
+
     fn assert_physical_invariants(hf: &HartreeFock, result: &SCFResult, tolerance: f64) {
         let diagnostics = hf.diagnostics(result).expect("diagnostics failed");
         assert!(
@@ -586,6 +601,29 @@ mod tests {
             "Roothaan-Hall stationarity residual is too large:\n{}",
             diagnostics.human_readable_report(result.converged, result.iterations)
         );
+    }
+
+    fn assert_molecular_reference(
+        name: &str,
+        atoms: Vec<Atom>,
+        charge: i32,
+        expected_energy: f64,
+        energy_tolerance: f64,
+    ) {
+        let hf = HartreeFock::new(Molecule::new(atoms, charge, 1))
+            .unwrap_or_else(|error| panic!("{name} HF setup failed: {error}"));
+        let result = hf
+            .run_scf(150, 1e-7)
+            .unwrap_or_else(|error| panic!("{name} SCF failed: {error}"));
+        let diagnostics = hf.diagnostics(&result).expect("diagnostics failed");
+
+        assert!(
+            result.converged,
+            "{name} did not converge:\n{}",
+            diagnostics.human_readable_report(result.converged, result.iterations)
+        );
+        assert_abs_diff_eq!(result.energy, expected_energy, epsilon = energy_tolerance,);
+        assert_physical_invariants(&hf, &result, 2e-5);
     }
 
     #[test]
@@ -651,6 +689,82 @@ mod tests {
         assert!(result.converged);
         assert_abs_diff_eq!(result.energy, -74.963_074_544_5, epsilon = 3e-7);
         assert_physical_invariants(&hf, &result, 1e-6);
+    }
+
+    #[test]
+    fn test_heh_plus_ionic_heteronuclear_reference() {
+        assert_molecular_reference(
+            "HeH+",
+            vec![
+                atom_angstrom(2, [0.0, 0.0, 0.0]),
+                atom_angstrom(1, [0.0, 0.0, 0.774]),
+            ],
+            1,
+            -2.841_779_241_3,
+            2e-5,
+        );
+    }
+
+    #[test]
+    fn test_lih_second_row_reference() {
+        assert_molecular_reference(
+            "LiH",
+            vec![
+                atom_angstrom(3, [0.0, 0.0, 0.0]),
+                atom_angstrom(1, [0.0, 0.0, 1.595]),
+            ],
+            0,
+            -7.862_023_860_1,
+            2e-5,
+        );
+    }
+
+    #[test]
+    fn test_carbon_monoxide_multiple_bond_reference() {
+        assert_molecular_reference(
+            "CO",
+            vec![
+                atom_angstrom(6, [0.0, 0.0, 0.0]),
+                atom_angstrom(8, [0.0, 0.0, 1.128]),
+            ],
+            0,
+            -111.224_558_695_6,
+            2e-4,
+        );
+    }
+
+    #[test]
+    fn test_methane_tetrahedral_reference() {
+        let h = 0.629_312;
+        assert_molecular_reference(
+            "CH4",
+            vec![
+                atom_angstrom(6, [0.0, 0.0, 0.0]),
+                atom_angstrom(1, [h, h, h]),
+                atom_angstrom(1, [h, -h, -h]),
+                atom_angstrom(1, [-h, h, -h]),
+                atom_angstrom(1, [-h, -h, h]),
+            ],
+            0,
+            -39.726_700_035_4,
+            3e-5,
+        );
+    }
+
+    #[test]
+    fn test_ammonia_pyramidal_reference() {
+        assert_molecular_reference(
+            "NH3",
+            vec![
+                atom_angstrom(7, [0.0, 0.0, 0.116_489]),
+                atom_angstrom(1, [0.0, 0.939_731, -0.271_808]),
+                atom_angstrom(1, [0.813_831, -0.469_865, -0.271_808]),
+                atom_angstrom(1, [-0.813_831, -0.469_865, -0.271_808]),
+            ],
+            0,
+            -55.454_560_879_5,
+            2e-5,
+        );
     }
 
     #[test]

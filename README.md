@@ -218,7 +218,7 @@ MANIFOLD_HF_BENCHMARKS=quick cargo test --test benchmarks
 ```
 
 Quick runs the `small` tagged molecules (H2, H2O, D2O). Run the full set
-(includes alcohols, benzene, polymers, peptide):
+(includes alcohols, benzene, polymers, and a peptide):
 
 ```bash
 MANIFOLD_HF_BENCHMARKS=full cargo test --test benchmarks
@@ -332,7 +332,7 @@ Tests cover:
 - Molecular properties
 - Basis set construction
 - Manifold operations
-- Independent He and H2 STO-3G/RHF reference energies
+- Independent He, H2, HeH+, LiH, CO, CH4, NH3, and H2O STO-3G/RHF reference energies
 - Standard/manifold agreement and RHF input validation
 - Electron count, density symmetry, MO orthonormality, and SCF stationarity
 - PySCF energy benchmarks plus H2/H2O geometry and symmetry invariants
