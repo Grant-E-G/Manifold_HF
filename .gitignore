@@ -37,3 +37,6 @@ __pycache__/
 *_orb*.html
 *orbitals*.html
 out/
+
+# Private working notes and blog drafts
+/notes/
