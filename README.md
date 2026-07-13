@@ -11,6 +11,7 @@ This library implements the Hartree-Fock (HF) method for quantum chemistry calcu
 - **Pure Rust Implementation**: All core algorithms implemented in Rust without external BLAS/LAPACK dependencies
 - **Functional Programming Style**: Immutable data structures, pure functions, and functional composition throughout
 - **Manifold Optimization**: Direct optimization on the Stiefel manifold for molecular orbitals
+- **Multiple Optimizers**: RSGD, Riemannian CG, Riemannian Adam/AMSGrad, Cayley SGD, and Riemannian L-BFGS
 - **Self-Consistent Field (SCF)**: Traditional Roothaan-Hall SCF algorithm
 - **Minimal Basis Sets**: STO-3G style Gaussian basis functions with support for s and p orbitals
 - **Example Molecules**: Pre-configured H₂, H₂O, and D₂O (heavy water) molecules
@@ -74,6 +75,38 @@ fn main() {
 }
 ```
 
+### Choosing a manifold optimizer
+
+Riemannian conjugate gradient remains the default. Select another optimizer with
+`ManifoldOptimizationOptions`:
+
+```rust
+use manifold_hf::{
+    HartreeFock, ManifoldOptimizationOptions, ManifoldOptimizer, Molecule,
+};
+
+let hf = HartreeFock::new(Molecule::h2o()).unwrap();
+let options = ManifoldOptimizationOptions {
+    optimizer: ManifoldOptimizer::RiemannianLbfgs,
+    ..ManifoldOptimizationOptions::default()
+};
+let result = hf
+    .run_scf_manifold_with_options(200, 1e-6, &options)
+    .unwrap();
+
+println!(
+    "energy={:.10}, iterations={}, Fock builds={}",
+    result.energy, result.iterations, result.fock_builds
+);
+```
+
+Available selections are `RiemannianGradientDescent`,
+`RiemannianConjugateGradient`, `RiemannianAdam`, `RiemannianAmsGrad`,
+`CayleySgd`, and `RiemannianLbfgs`. Energy and gradient are evaluated together,
+so an accepted point needs one Fock construction rather than separate energy
+and gradient constructions. `SCFResult::fock_builds` exposes the resulting
+objective cost for comparisons.
+
 ## Architecture
 
 The library is organized into functional modules:
@@ -104,7 +137,7 @@ The library is organized into functional modules:
 - **`manifold`**: Stiefel manifold optimization
   - Riemannian gradient computation
   - Retraction operations
-  - Conjugate gradient optimization
+  - First-order, adaptive, conjugate-gradient, Cayley, and L-BFGS optimization
   - Manifold projections
 
 ## Mathematical Background

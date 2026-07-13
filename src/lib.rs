@@ -22,8 +22,9 @@ pub mod visualize;
 /// Re-export commonly used types
 pub use linalg::{Matrix, Vector};
 pub use manifold::{
-    BacktrackingArmijoLineSearch, ConjugateGradientVariant, FixedStepLineSearch, LineSearchMethod,
-    ManifoldOptimizationOptions, ManifoldOptimizationResult, StiefelManifold,
+    BacktrackingArmijoLineSearch, CayleySgdOptions, ConjugateGradientVariant, FixedStepLineSearch,
+    LineSearchMethod, ManifoldEvaluation, ManifoldOptimizationOptions, ManifoldOptimizationResult,
+    ManifoldOptimizer, RiemannianAdamOptions, RiemannianLbfgsOptions, StiefelManifold,
 };
 pub use molecule::Molecule;
 pub use scf::{HFDiagnostics, HartreeFock, SCFResult};

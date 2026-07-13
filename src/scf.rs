@@ -5,7 +5,7 @@
 
 use crate::basis::BasisSet;
 use crate::linalg::{eig, frobenius_norm, matmul, trace, transpose, Matrix, Vector};
-use crate::manifold::{ManifoldOptimizationOptions, StiefelManifold};
+use crate::manifold::{ManifoldEvaluation, ManifoldOptimizationOptions, StiefelManifold};
 use crate::molecule::Molecule;
 use ndarray::s;
 use ndarray::Array1;
@@ -117,6 +117,7 @@ impl HartreeFock {
             density,
             converged,
             iterations,
+            fock_builds: 2 * iterations + 2,
         })
     }
 
@@ -151,23 +152,20 @@ impl HartreeFock {
         println!("Running Hartree-Fock with Manifold optimization");
         println!("Basis functions: {}, Occupied orbitals: {}", n_basis, n_occ);
 
-        // Energy function for manifold optimization
-        let energy_fn = |y: &Matrix| -> f64 {
+        // Energy and gradient share the same density/Fock construction. Returning
+        // them together avoids a second O(n^4) ERI contraction at accepted points.
+        let oracle = |y: &Matrix| -> ManifoldEvaluation {
             let state = self.manifold_state(y, &s_inv_sqrt);
-            self.compute_energy(&state.density, &state.fock)
-        };
-
-        // Gradient function for manifold optimization
-        let grad_fn = |y: &Matrix| -> Matrix {
-            let state = self.manifold_state(y, &s_inv_sqrt);
-            // Gradient: 4 * Fock * C_occ
             let grad_c = &state.fock.dot(&state.c_occ) * 4.0;
-            matmul(&transpose(&s_inv_sqrt), &grad_c)
+            ManifoldEvaluation {
+                energy: self.compute_energy(&state.density, &state.fock),
+                euclidean_gradient: matmul(&transpose(&s_inv_sqrt), &grad_c),
+            }
         };
 
         // Optimize on manifold
-        let optimization = manifold
-            .optimize_cg_with_options(&y_initial, grad_fn, energy_fn, max_iter, tol, options)?;
+        let optimization =
+            manifold.optimize_with_options(&y_initial, oracle, max_iter, tol, options)?;
         let y_opt = optimization.point;
         let state = self.manifold_state(&y_opt, &s_inv_sqrt);
         let energy = self.compute_energy(&state.density, &state.fock);
@@ -184,6 +182,7 @@ impl HartreeFock {
             density: state.density,
             converged: optimization.converged,
             iterations: optimization.iterations,
+            fock_builds: optimization.objective_evaluations + 1,
         })
     }
 
@@ -438,6 +437,8 @@ pub struct SCFResult {
     pub converged: bool,
     /// Number of optimization / SCF iterations performed
     pub iterations: usize,
+    /// Number of Fock matrix constructions performed by the solver.
+    pub fock_builds: usize,
 }
 
 /// Basis-independent and AO-matrix consistency checks for an HF result.
@@ -551,6 +552,7 @@ fn complete_orthonormal_basis(occupied: &Matrix) -> Result<Matrix, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifold::{CayleySgdOptions, ManifoldOptimizer, RiemannianAdamOptions};
     use crate::molecule::Atom;
     use approx::assert_abs_diff_eq;
 
@@ -677,6 +679,44 @@ mod tests {
         assert_abs_diff_eq!(standard.energy, manifold.energy, epsilon = 1e-8);
         let density_gap = frobenius_norm(&(&standard.density - &manifold.density));
         assert!(density_gap < 1e-7, "density gap = {density_gap:.3e}");
+    }
+
+    #[test]
+    fn test_all_public_manifold_optimizers_on_water() {
+        let hf = HartreeFock::new(Molecule::h2o()).unwrap();
+        let reference = hf.run_scf(100, 1e-8).unwrap();
+        for optimizer in [
+            ManifoldOptimizer::RiemannianGradientDescent,
+            ManifoldOptimizer::RiemannianConjugateGradient,
+            ManifoldOptimizer::RiemannianAdam,
+            ManifoldOptimizer::RiemannianAmsGrad,
+            ManifoldOptimizer::CayleySgd,
+            ManifoldOptimizer::RiemannianLbfgs,
+        ] {
+            let options = ManifoldOptimizationOptions {
+                optimizer,
+                adam: RiemannianAdamOptions {
+                    step_size: 3e-2,
+                    ..RiemannianAdamOptions::default()
+                },
+                cayley_sgd: CayleySgdOptions {
+                    step_size: 5e-3,
+                    momentum: 0.5,
+                },
+                ..ManifoldOptimizationOptions::default()
+            };
+            let result = hf
+                .run_scf_manifold_with_options(500, 1e-5, &options)
+                .unwrap_or_else(|error| panic!("{optimizer:?} failed: {error}"));
+            let diagnostics = hf.diagnostics(&result).unwrap();
+            assert!(
+                result.converged,
+                "{optimizer:?} did not converge:\n{}",
+                diagnostics.human_readable_report(result.converged, result.iterations)
+            );
+            assert_abs_diff_eq!(result.energy, reference.energy, epsilon = 2e-5);
+            assert_physical_invariants(&hf, &result, 2e-5);
+        }
     }
 
     #[test]
